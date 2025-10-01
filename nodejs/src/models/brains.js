@@ -58,19 +58,34 @@ const schema = new Schema(
     { timestamps: true },
 );
 
-// Compound unique index on slug and user.userId
-schema.index({ slug: 1, 'workspaceId': 1 }, { unique: true });
+// Scoped unique indexes:
+// 1) Shared brains: unique per workspace
+schema.index(
+    { slug: 1, 'workspaceId': 1 },
+    { unique: true, partialFilterExpression: { isShare: true } }
+);
 
-// Ensure that slug is unique per user
+// 2) Private brains: unique per user within the workspace
+schema.index(
+    { slug: 1, 'workspaceId': 1, 'user.id': 1 },
+    { unique: true, partialFilterExpression: { isShare: false } }
+);
+
+// Ensure that slug is unique with correct scoping
 schema.pre('save', async function (next) {
-    if (this.isModified('slug')) {
-        // Check if there is any other document with the same slug for the same user
-        const count = await this.constructor.countDocuments({
+    if (this.isModified('slug') || this.isModified('title') || this.isNew) {
+        const baseQuery = {
             slug: this.slug,
             'workspaceId': this.workspaceId
-        });
-        if (count > 0) {
-            // this.slug = `${this.slug}-${count}`;
+            // NOTE: archived (deletedAt) should still block duplicates by requirement
+        };
+
+        const scopeQuery = this.isShare
+            ? { isShare: true }
+            : { isShare: false, 'user.id': this?.user?.id };
+
+        const exists = await this.constructor.exists({ ...baseQuery, ...scopeQuery, _id: { $ne: this._id } });
+        if (exists) {
             const error = new Error(`${this.title} brain already exists`)
             return next(error);
         }
