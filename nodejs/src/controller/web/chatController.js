@@ -51,6 +51,17 @@ const checkChatAccess = catchAsync(async (req, res) => {
     }
     return util.failureResponse(_localize('auth.access_denied', req), res);
 })
+const enhancePrompt = catchAsync(async (req, res) => {
+    const result = await chatService.enhancePrompt(req);
+    res.message = _localize('module.create', req, 'prompt');
+    return util.successResponse(result, res);
+})
+
+const getSearchMetadata = catchAsync(async (req, res) => {
+    const result = await chatService.getSearchMetadata(req);
+    res.message = _localize('module.get', req, 'search metadata');
+    return util.successResponse(result, res);
+})
 
 module.exports = {
     addChat,
@@ -59,5 +70,7 @@ module.exports = {
     getChatById,
     forkChat,
     updateChat,
-    checkChatAccess
+    checkChatAccess,
+    enhancePrompt,
+    getSearchMetadata
 }

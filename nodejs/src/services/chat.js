@@ -1,5 +1,5 @@
 const Chat = require('../models/chat');
-const { formatUser, getCompanyId, formatBrain } = require('../utils/helper');
+const { formatUser, getCompanyId, formatBrain, decryptedData, encryptedData } = require('../utils/helper');
 const dbService = require('../utils/dbService');
 const ChatMember = require('../models/chatmember');
 const shareBrain = require('../models/shareBrain');
@@ -8,6 +8,9 @@ const Brain = require("../models/brains");
 const { createDefaultBrain, shareBrainWithUser } = require('./brain');
 const WorkSpace = require('../models/workspace');
 const { DEFAULT_NAME } = require('../config/constants/common');
+const { enhancePromptByLLM } = require('./langgraph');
+const { LINK } = require('../config/config');
+const Message = require('../models/thread');
 
 const addChat = async (req) => {
     try {
@@ -421,6 +424,60 @@ async function initializeChat(payload) {
         handleError(error, 'Error - initializeChat');
     }
 }
+const enhancePrompt = async (req) => {
+    try {
+        const { query, apiKey } = req.body;
+        const result = await enhancePromptByLLM({ query, apiKey });
+        return result;
+    } catch (error) {
+        handleError(error, 'Error - enhancePrompt');
+    }
+}
+
+const getSearchMetadata = async (req) => {
+    try {
+        const { query, messageId } = req.body;
+        // always need first page latest results only
+        const result = await fetch(`${LINK.SEARXNG_API_URL}/search?q=${query}&categories=images,videos&format=json&pageno=1`);
+        const data = await result.json();
+        const images = [], videos = [];
+        data.results.forEach((result) => {
+            if (result.category.startsWith('images')) {
+                if (images.length >= 10) return;
+                images.push({
+                    url: result.url,
+                    thumbnail_src: result.thumbnail_src,
+                    img_src: result.img_src,
+                    title: result.title,
+                });
+            }
+            if (result.category.startsWith('videos')) {
+                if (videos.length >= 10) return;
+                videos.push({
+                    url: result.url,
+                    title: result.title,
+                    thumbnail: result.thumbnail,
+                });
+            }
+        });
+        if (images.length) {
+            const message = await Message.findById({ _id: messageId }, { ai: 1 });
+            if (message) {
+                const decryptedAi = decryptedData(message.ai);
+                const parsedAi = JSON.parse(decryptedAi);
+                const { response_metadata } = parsedAi.data;
+                response_metadata.images = images;
+                response_metadata.videos = videos;
+                parsedAi.data.response_metadata = response_metadata;
+                message.ai = encryptedData(JSON.stringify(parsedAi));
+                await message.save();
+            }
+        }
+        return { images, videos };
+    } catch (error) {
+        handleError(error, 'Error - getSearchMetadata');
+    }
+}
 
 module.exports = {
     addChat,
@@ -431,5 +488,7 @@ module.exports = {
     updateChat,
     checkChatAccess,
     socketFetchChatById,
-    initializeChat
+    initializeChat,
+    enhancePrompt,
+    getSearchMetadata
 };

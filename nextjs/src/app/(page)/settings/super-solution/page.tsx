@@ -24,11 +24,12 @@ import useMembers from '@/hooks/members/useMembers';
 import { useTeams } from '@/hooks/team/useTeams';
 import AutoSelectChip from '@/components/ui/AutoSelectChip';
 import ProfileImage from '@/components/Profile/ProfileImage';
-import { displayName, showNameOrEmail } from '@/utils/common';
+import { DEFAULT_CHARACTERS_SOLUTION_APP, displayName, showNameOrEmail } from '@/utils/common';
 import { Controller, useForm } from 'react-hook-form';
 import { yupResolver } from '@hookform/resolvers/yup';
 import * as yup from 'yup';
 import Toast from '@/utils/toast';
+import Image from 'next/image';
 // Removed commonApi and MODULE_ACTIONS imports - using direct SSE connection instead
 
 // Validation schemas
@@ -285,10 +286,11 @@ const SuperSolutionPage = () => {
     // Mapping from app names to solution types
     const getSolutionTypeFromAppName = (appName: string): string => {
         const mapping: { [key: string]: string } = {
-            'AI Docs': 'ai-doc-editor',
+            'AI Docs': 'ai-docs',
             'AI Recruiter': 'ai-recruiter',
             'AI Landing Page Generator': 'ai-landing-page-generator',
-            'SEO Content Gen': 'seo-content-gen'
+            'Blog Engine': 'blog-engine',
+            'Call Analyzer': 'call-analyzer'
         };
         return mapping[appName] || '';
     };
@@ -307,7 +309,7 @@ const SuperSolutionPage = () => {
 
     const handleInstall = async (solutionType?: string) => {
         // If no solutionType provided, get it from selectedApp
-        const finalSolutionType = solutionType || (selectedApp ? getSolutionTypeFromAppName(selectedApp.name) : 'ai-doc-editor');
+        const finalSolutionType = solutionType || (selectedApp ? getSolutionTypeFromAppName(selectedApp.name) : 'ai-docs');
         console.log('SuperSolution handleInstall - solutionType:', solutionType, 'selectedApp:', selectedApp?.name, 'finalSolutionType:', finalSolutionType);
         
         // Disable buttons immediately for this specific solution
@@ -365,7 +367,7 @@ const SuperSolutionPage = () => {
 
     const handleUninstall = async (solutionType?: string) => {
         // If no solutionType provided, get it from selectedApp
-        const finalSolutionType = solutionType || (selectedApp ? getSolutionTypeFromAppName(selectedApp.name) : 'ai-doc-editor');
+        const finalSolutionType = solutionType || (selectedApp ? getSolutionTypeFromAppName(selectedApp.name) : 'ai-docs');
         console.log('SuperSolution handleUninstall - solutionType:', solutionType, 'selectedApp:', selectedApp?.name, 'finalSolutionType:', finalSolutionType);
         
         // Disable buttons immediately for this specific solution
@@ -423,7 +425,7 @@ const SuperSolutionPage = () => {
 
     const handleSync = async (solutionType?: string) => {
         // If no solutionType provided, get it from selectedApp
-        const finalSolutionType = solutionType || (selectedApp ? getSolutionTypeFromAppName(selectedApp.name) : 'ai-doc-editor');
+        const finalSolutionType = solutionType || (selectedApp ? getSolutionTypeFromAppName(selectedApp.name) : 'ai-docs');
         console.log('SuperSolution handleSync - solutionType:', solutionType, 'selectedApp:', selectedApp?.name, 'finalSolutionType:', finalSolutionType);
         
         // Disable buttons immediately for this specific solution
@@ -525,24 +527,34 @@ const SuperSolutionPage = () => {
 
     useEffect(() => {
         if (members?.length) {
-            const memberlist = members.map((user) => ({
-                email: user.email,
-                id: user.id,
-                fullname: showNameOrEmail(user),
-                fname: user?.fname,
-                lname: user?.lname,
-            }));
+            const memberlist = members.reduce((acc, user) => {
+                if (!currentAppMembers.some((appMember) => appMember.id === user.id)) {
+                    acc.push({
+                        email: user.email,
+                        id: user.id,
+                        fullname: showNameOrEmail(user),
+                        fname: user?.fname,
+                        lname: user?.lname,
+                    });
+                }
+                return acc;
+            }, []);
             setMemberOptions(memberlist);
         }
     }, [members]);
 
     useEffect(() => {
         if (teams?.length) {
-            const teamlist = teams.map((team) => ({
-                teamName: team.teamName,
-                id: team._id,
-                teamUsers: team.teamUsers || [],
-            }));
+            const teamlist = teams.reduce((acc, team) => {
+                if (!currentAppTeams.some((appTeam) => appTeam.id === team._id)) {
+                    acc.push({
+                        teamName: team.teamName,
+                        id: team._id,
+                        teamUsers: team.teamUsers || [],
+                    });
+                }
+                return acc;
+            }, []);
             setTeamOptions(teamlist);
         }
     }, [teams]);
@@ -605,14 +617,19 @@ const SuperSolutionPage = () => {
                                             }
                                         >   
                                             <div className="flex gap-3 mb-3">
-                                                <span>
+                                            <div className="flex items-center justify-center w-10 h-10 bg-gray-100 rounded-full flex-shrink-0">
                                                     {(() => {
-                                                        const IconComponent = getIconComponent(app.icon);
                                                         return (
-                                                            <IconComponent className="w-6 h-6 text-gray-600" />
+                                                            <Image
+                                                                src={app.charimg || DEFAULT_CHARACTERS_SOLUTION_APP[10]}
+                                                                alt={app.name}
+                                                                width={40}
+                                                                height={40}
+                                                                className="w-10 h-10 object-contain rounded-full"
+                                                            />
                                                         );
                                                     })()}
-                                                </span>
+                                                </div>
                                                 <div>
                                                     <h3 className="font-semibold">
                                                         {app.name}
@@ -650,14 +667,17 @@ const SuperSolutionPage = () => {
                         <DialogHeader className="border-b pb-3 mb-4">
                             <DialogTitle className="flex items-center gap-3 font-bold">
                                 <div className="flex items-center justify-center w-10 h-10 bg-gray-100 rounded-full">
-                                    {(() => {
-                                        const IconComponent = getIconComponent(
-                                            selectedApp.icon
-                                        );
-                                        return (
-                                            <IconComponent className="w-5 h-5 text-gray-600" />
-                                        );
-                                    })()}
+                                {(() => {
+                                    return (
+                                        <Image
+                                            src={selectedApp.charimg || DEFAULT_CHARACTERS_SOLUTION_APP[10]}
+                                            alt={selectedApp.name}
+                                            width={40}
+                                            height={40}
+                                            className="w-10 h-10 object-contain rounded-full"
+                                        />
+                                    );
+                                })()}
                                 </div>
                                 <div>
                                     {selectedApp.name} - Access Management

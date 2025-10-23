@@ -13,7 +13,6 @@ module.exports = {
     SERVER: {
         PORT: process.env.SERVER_PORT || 4051,
         NODE_ENV: process.env.NODE_ENV,
-        LOCAL_LOG: process.env.LOCAL_LOG
     },
     API: {
         PREFIX: process.env.API_PREFIX,
@@ -45,6 +44,8 @@ module.exports = {
         SEARXNG_API_URL: 'https://dev-searxng.weam.ai',
         MINIO_ENDPOINT: process.env.MINIO_ENDPOINT,
         MCP_SERVER_URL: process.env.MCP_SERVER_URL,
+        OLLAMA_API_URL: process.env.OLAMA_COMMON_URL,
+        PERPLEXITY_API_URL: 'https://api.perplexity.ai',
     },
     AUTH: {
         JWT_SECRET: process.env.JWT_SECRET,
@@ -98,7 +99,6 @@ module.exports = {
     TZ: process.env.TZ ?? 'Asia/Kolkata',
     ENCRYPTION_KEY: process.env.SECURITY_KEY,
     SUPPORT_EMAIL: process.env.SUPPORT_EMAIL,
-    FRESHDESK_SUPPORT_URL: process.env.FRESHDESK_SUPPORT_URL,
     EMAIL: {
         EMAIL_PROVIDER: process.env.EMAIL_PROVIDER,
         SMTP_SERVER: process.env.SMTP_SERVER,
