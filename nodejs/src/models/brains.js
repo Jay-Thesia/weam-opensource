@@ -58,6 +58,9 @@ const schema = new Schema(
     { timestamps: true },
 );
 
+//if this index exist first remove it schema.index({ slug: 1, 'workspaceId': 1 }, { unique: true });
+schema.dropIndex("slug_1_workspaceId_1");
+
 // Scoped unique indexes:
 // 1) Shared brains: unique per workspace
 schema.index(
