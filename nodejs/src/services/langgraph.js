@@ -2,14 +2,15 @@ const { ChatOpenAI } = require('@langchain/openai');
 const { StateGraph, END } = require('@langchain/langgraph');
 const { ToolMessage, HumanMessage, SystemMessage } = require('@langchain/core/messages');
 const { langGraphEventName, llmStreamingEvents, toolCallOptions, toolDescription, IS_MCP_TOOLS } = require('../config/constants/llm');
-const { SOCKET_EVENTS } = require('../config/constants/socket');
+const { SOCKET_EVENTS, SOCKET_ROOM_PREFIX } = require('../config/constants/socket');
 const Messages = require('../models/thread');
 const Brain = require('../models/brains');
-const { decryptedData } = require('../utils/helper');
+const { decryptedData, catchSocketAsync } = require('../utils/helper');
 const { LINK } = require('../config/config');
-const { AI_MODAL_PROVIDER, MODAL_NAME , ANTHROPIC_MAX_TOKENS } = require('../config/constants/aimodal');
+const { AI_MODAL_PROVIDER, MODAL_NAME , ANTHROPIC_MAX_TOKENS, PERPLEXITY_MODAL } = require('../config/constants/aimodal');
 const { ChatAnthropic } = require('@langchain/anthropic');
 const { ChatGoogleGenerativeAI } = require('@langchain/google-genai');
+const ollamaService = require('./ollamaService');
 const { SearxNGSearchTool } = require('./searchTool');
 const { createLLMConversation } = require('./thread');
 const { getConversationHistory } = require('./memoryService');
@@ -24,6 +25,7 @@ const logger = require('../utils/logger');
 const { tool } = require('@langchain/core/tools');
 const Chat = require('../models/chat');
 const ChatMember = require('../models/chatmember');
+const { perplexityRawStream } = require('./perplexityRaw')
 
 const webSearchTool = new SearxNGSearchTool({
     searxUrl: LINK.SEARXNG_API_URL,
@@ -52,9 +54,13 @@ function getAnthropicMaxTokens(modelName) {
 const { createDallEImageTool } = require('./imageTool');
 const { initializeMCPClient, selectRelevantToolsWithDomainFilter } = require('./mcpService');
 const { z } = require('zod');
+// Import the custom Gemini image tool
+const { createGeminiImageTool } = require('./geminiImageTool');
 
 // Create the DALL-E image generation tool with default API key
-const imageGenerationTool = createDallEImageTool(LINK.WEAM_OPEN_AI_KEY);
+const imageGenerationTool = createDallEImageTool();
+// Create the Gemini image generation tool with default API key
+const geminiImageTool = createGeminiImageTool();
 
 // Current time tool
 const currentTimeTool = tool(
@@ -74,24 +80,33 @@ const MODEL_CONFIGS = {
     [AI_MODAL_PROVIDER.OPEN_AI]: {
         supportsVision: true,
         imageFormats: ['url'],
-        formatImage: (imageUrl) => ({
-            type: 'image_url',
-            image_url: {
-                url: imageUrl
+        formatImage: async (imageUrl) => {
+            const result= await convertImageToBase64(imageUrl);
+            if (!result) {
+                return null;
             }
-        })
+            return {
+                type: 'image_url',
+                image_url: {
+                    url: `data:${result.mimeType};base64,${result.base64}`
+                }
+            };
+        }
     },
     [AI_MODAL_PROVIDER.ANTHROPIC]: {
         supportsVision: true,
         imageFormats: ['base64'],
         formatImage: async (imageUrl) => {
-            const { base64, mimeType } = await convertImageToBase64(imageUrl);
+            const result= await convertImageToBase64(imageUrl);
+            if (!result) {
+                return null;
+            }
             return {
                 type: 'image',
                 source: {
                     type: 'base64',
-                    media_type: mimeType,
-                    data: base64
+                    media_type: result.mimeType,
+                    data: result.base64
                 }
             };
         }
@@ -100,11 +115,14 @@ const MODEL_CONFIGS = {
         supportsVision: true,
         imageFormats: ['base64'],
         formatImage: async (imageUrl) => {
-            const { base64, mimeType } = await convertImageToBase64(imageUrl);
+            const result= await convertImageToBase64(imageUrl);
+            if (!result) {
+                return null;
+            }
             return {
                 type: 'image_url',
                 image_url: {
-                    url: `data:${mimeType};base64,${base64}`
+                    url: `data:${result.mimeType};base64,${result.base64}`
                 }
             };
         }
@@ -231,8 +249,6 @@ function queryNeedsTools(query) {
     if (!query || typeof query !== 'string') {
         return false;
     }
-    
-    console.log('🔧 [DYNAMIC ANALYSIS] Enabling all tools for LangGraph to decide dynamically');
     return true;
 }
 
@@ -242,12 +258,10 @@ async function getCachedMCPClient() {
     
     // Return cached client if still valid
     if (mcpClientCache && (now - mcpCacheTimestamp) < MCP_CACHE_TTL) {
-        console.log('🚀 [ULTRA-FAST] Using cached MCP client');
         return mcpClientCache;
     }
     
     // Initialize new client and cache it
-    console.log('🔧 [OPTIMIZATION] Initializing and caching MCP client');
     mcpClientCache = await initializeMCPClient();
     mcpCacheTimestamp = now;
     
@@ -259,6 +273,7 @@ function getToolExecutorMap(agentDetails = null, mcpTools = []) {
     const baseTools = {
         [webSearchTool.name]: webSearchTool,
         [imageGenerationTool.name]: imageGenerationTool,
+        [geminiImageTool.name]: geminiImageTool,
         [currentTimeTool.name]: currentTimeTool,
         ...Object.fromEntries(mcpTools.map(tool => [tool.name, tool]))
     };
@@ -420,7 +435,6 @@ async function callModel(state, model, data, agentDetails = null) {
             content = '[Content parsing error]';
         }
     });
-    
     const response = await model.invoke(context);
     
     // Safe logging for response content
@@ -450,7 +464,6 @@ async function callTool(state, agentDetails = null, userData = null) {
 
     // Get MCP tools from global state if available
     const mcpTools = global.mcpTools || [];
-    // console.log('mcpTools:', mcpTools);
     const toolExecutorMap = getToolExecutorMap(agentDetails, mcpTools);
     const toolInvocations = [];
     
@@ -462,6 +475,10 @@ async function callTool(state, agentDetails = null, userData = null) {
                 // For image generation tool, pass the API key from the query data
                 let toolArgs = toolCall.args;
                 if (toolCall.name === 'dalle_api_wrapper' && global.currentQueryData && global.currentQueryData.apiKey) {
+                    const decryptedApiKey = decryptedData(global.currentQueryData.apiKey);
+                    toolArgs = { ...toolCall.args, apiKey: decryptedApiKey };
+                }
+                if (toolCall.name === 'gemini_image_generator' && global.currentQueryData && global.currentQueryData.apiKey) {
                     const decryptedApiKey = decryptedData(global.currentQueryData.apiKey);
                     toolArgs = { ...toolCall.args, apiKey: decryptedApiKey };
                 }
@@ -494,7 +511,6 @@ async function callTool(state, agentDetails = null, userData = null) {
                     const executeWithRetry = async (retries = 2) => {
                         for (let attempt = 0; attempt <= retries; attempt++) {
                             try {
-                                console.log(`Executing MCP tool '${toolCall.name}' (attempt ${attempt + 1}/${retries + 1})`);
                                 return await Promise.race([
                                     toolExecutor.invoke(toolArgs),
                                     timeoutPromise
@@ -611,16 +627,26 @@ async function toolChatOpenRouterWithCallback(modelName, opts = {}, costCallback
 }
 
 async function llmFactory(modelName, opts = {}) {
+    // Debug logging to understand what provider is being used
+    console.log(`🔍 [LLM_FACTORY] Original provider: ${opts.llmProvider}, Model: ${modelName}`);
 
-    // Validate API key
-    if (!opts.apiKey) {
-        throw new Error('API key is required but not provided');
-    }
-    
-    // Ensure we have a valid provider, default to OPEN_AI if none specified
+    // Ensure we have a valid provider FIRST, default to OPEN_AI if none specified
     let provider = opts.llmProvider;
     if (!provider || !Object.values(AI_MODAL_PROVIDER).includes(provider)) {
+        console.log(`⚠️ [LLM_FACTORY] Invalid provider ${provider}, defaulting to OPEN_AI`);
         provider = AI_MODAL_PROVIDER.OPEN_AI;
+    }
+
+    console.log(`✅ [LLM_FACTORY] Final provider: ${provider}`);
+
+    // NOW validate API key (skip for providers that don't require it)
+    const skipKeyProviders = [AI_MODAL_PROVIDER.OLLAMA, AI_MODAL_PROVIDER.LOCAL_LLM];
+    const needsApiKey = !skipKeyProviders.includes(provider);
+
+    console.log(`🔑 [LLM_FACTORY] Provider ${provider} needs API key: ${needsApiKey}`);
+
+    if (needsApiKey && !opts.apiKey) {
+        throw new Error(`API key is required for ${provider} but not provided`);
     }
     
     // Create cost callback if threadId is provided
@@ -652,24 +678,19 @@ async function llmFactory(modelName, opts = {}) {
     // Ultra-fast path: Skip expensive operations for simple queries
     let selectedTools = [];
     const needsTools = queryNeedsTools(opts.query);
-    // console.log('🔍 [QUERY ANALYSIS] Query needs tools:', needsTools);
     
     if (needsTools) {
-        console.log('🔧 [OPTIMIZATION] Query requires tools, using cached MCP client...');
         const availableMcpTools = await getCachedMCPClient();
         const rawSelectedTools = await selectRelevantToolsWithDomainFilter(opts.query, availableMcpTools);
         selectedTools = (rawSelectedTools || []).filter(tool => tool != null && typeof tool === 'object');
-        console.log(`🔧 [OPTIMIZATION] Selected ${selectedTools.length} MCP tools for query`);
     } else {
-        console.log('🚀 [ULTRA-FAST] Simple query detected, bypassing all tool operations');
     }
     
     const llmConfig = {
-        [AI_MODAL_PROVIDER.OPEN_AI]: (() => {
+        [AI_MODAL_PROVIDER.OPEN_AI]: () => {
             // Check cache for simple model first
             const cacheKey = `openai_${modelName}_${needsTools}`;
             if (!needsTools && simpleModelCache.has(cacheKey)) {
-                console.log('🚀 [ULTRA-FAST] Using cached simple OpenAI model');
                 return simpleModelCache.get(cacheKey);
             }
             
@@ -682,7 +703,7 @@ async function llmFactory(modelName, opts = {}) {
             });
             
             // chatgpt-4o-latest doesn't support tools, so don't bind them
-            if (modelName.toLowerCase().includes('chatgpt-4o-latest')) {
+            if (modelName.toLowerCase().includes('chatgpt-4o-latest')){
                 if (!needsTools) {
                     simpleModelCache.set(cacheKey, openAIModel);
                 }
@@ -700,19 +721,26 @@ async function llmFactory(modelName, opts = {}) {
             }
             
             return openAIModel;
-        })(),
-        [AI_MODAL_PROVIDER.ANTHROPIC]: (() => {
+        },
+        [AI_MODAL_PROVIDER.ANTHROPIC]: () => {
+            console.log(`🤖 [ANTHROPIC] Creating Anthropic model: ${modelName} with provider: ${provider}`);
+
+            // Validate that we have an API key for Anthropic
+            if (!opts.apiKey && !process.env.ANTHROPIC_API_KEY) {
+                console.error(`❌ [ANTHROPIC] No API key available for Anthropic`);
+                throw new Error(`Anthropic API key is required for ${AI_MODAL_PROVIDER.ANTHROPIC} provider`);
+            }
+
             // Check cache for simple model first
             const cacheKey = `anthropic_${modelName}_${needsTools}`;
             if (!needsTools && simpleModelCache.has(cacheKey)) {
-                console.log('🚀 [ULTRA-FAST] Using cached simple Anthropic model');
                 return simpleModelCache.get(cacheKey);
             }
-            
+
             const anthropicModel = new ChatAnthropic({
                 ...baseConfig,
-                anthropicApiKey: opts.apiKey,
-            maxTokens: getAnthropicMaxTokens(modelName), // Model-specific max_tokens
+                anthropicApiKey: opts.apiKey || process.env.ANTHROPIC_API_KEY,
+                maxTokens: getAnthropicMaxTokens(modelName), // Model-specific max_tokens
             });
             
             // Only bind tools if query needs them
@@ -726,13 +754,12 @@ async function llmFactory(modelName, opts = {}) {
             }
             
             return anthropicModel;
-        })(),
-        [AI_MODAL_PROVIDER.GEMINI]: (() => {
+        },
+        [AI_MODAL_PROVIDER.GEMINI]: () => {
             try {
                 // Check cache for simple model first
                 const cacheKey = `gemini_${modelName}_${needsTools}`;
                 if (!needsTools && simpleModelCache.has(cacheKey)) {
-                    console.log('🚀 [ULTRA-FAST] Using cached simple Gemini model');
                     return simpleModelCache.get(cacheKey);
                 }
                 
@@ -744,7 +771,7 @@ async function llmFactory(modelName, opts = {}) {
                 
                 // Only bind tools if query needs them
                 if (needsTools && (selectedTools.length > 0 || queryNeedsTools(opts.query))) {
-                    return geminiLLM.bindTools([webSearchTool, currentTimeTool, ...selectedTools]);
+                    return geminiLLM.bindTools([webSearchTool, geminiImageTool, currentTimeTool, ...selectedTools]);
                 }
                 
                 // Cache simple model for reuse
@@ -757,21 +784,247 @@ async function llmFactory(modelName, opts = {}) {
                 logger.error(`❌ [GEMINI] Failed to create ChatGoogleGenerativeAI:`, error);
                 throw error;
             }
-        })(),
-        [AI_MODAL_PROVIDER.DEEPSEEK]: await chatOpenRouterWithCallback(modelName, { ...opts, apiKey: opts.apiKey }, costCallback),
-        [AI_MODAL_PROVIDER.LLAMA4]: await toolChatOpenRouterWithCallback(modelName, { ...opts, apiKey: opts.apiKey }, costCallback, selectedTools),
-        [AI_MODAL_PROVIDER.GROK]: await toolChatOpenRouterWithCallback(modelName, { ...opts, apiKey: opts.apiKey }, costCallback, selectedTools),
-        [AI_MODAL_PROVIDER.QWEN]: await chatOpenRouterWithCallback(modelName, { ...opts, apiKey: opts.apiKey }, costCallback),
+        },
+        [AI_MODAL_PROVIDER.DEEPSEEK]: () => chatOpenRouterWithCallback(modelName, { ...opts, apiKey: opts.apiKey }, costCallback),
+        [AI_MODAL_PROVIDER.LLAMA4]: () => toolChatOpenRouterWithCallback(modelName, { ...opts, apiKey: opts.apiKey }, costCallback, selectedTools),
+        [AI_MODAL_PROVIDER.GROK]: () => toolChatOpenRouterWithCallback(modelName, { ...opts, apiKey: opts.apiKey }, costCallback, selectedTools),
+        [AI_MODAL_PROVIDER.QWEN]: () => chatOpenRouterWithCallback(modelName, { ...opts, apiKey: opts.apiKey }, costCallback),
+        [AI_MODAL_PROVIDER.OLLAMA]: () => {
+            // For Docker containers, use host.docker.internal to access host machine
+            const defaultBaseUrl = LINK.OLLAMA_COMMON_URL;
+            const baseUrl = opts.baseUrl || process.env.OLLAMA_URL || defaultBaseUrl;
+
+            console.log(`🤖 [OLLAMA] Creating Ollama model: ${modelName} with baseUrl: ${baseUrl}`);
+
+            return {
+                _costCallback: costCallback,
+                async invoke(context) {
+                    // Convert LangChain messages to Ollama chat format when possible
+                    const messages = (context || []).map(msg => {
+                        try {
+                            if (Array.isArray(msg)) {
+                                return { role: msg[0], content: msg[1] };
+                            }
+                            const ctor = msg?.constructor?.name || '';
+                            if (ctor === 'HumanMessage') return { role: 'user', content: msg.content };
+                            if (ctor === 'AIMessage') return { role: 'assistant', content: msg.content };
+                            if (ctor === 'SystemMessage') return { role: 'system', content: msg.content };
+                            // Fallback
+                            return { role: 'user', content: msg?.content || '' };
+                        } catch {
+                            return { role: 'user', content: '' };
+                        }
+                    });
+
+                    // Prefer chat if multiple messages exist, else use generate with last user content
+                    try {
+                        console.log(`🔍 [OLLAMA] Invoking with ${messages.length} messages, baseUrl: ${baseUrl}`);
+
+                        if (messages.length > 1) {
+                            console.log(`🔍 [OLLAMA] Using chat mode with messages:`, JSON.stringify(messages, null, 2));
+                            const res = await ollamaService.chat({
+                                messages,
+                                model: modelName,
+                                baseUrl,
+                                stream: false,
+                                userId: opts.userId,
+                                companyId: opts.companyRedisId,
+                                options: { temperature: baseConfig.temperature }
+                            });
+
+                            const text = res?.text || res?.response || res?.content || '';
+
+
+                            // Simulate streaming by emitting the complete response as chunks
+                            // This makes Ollama compatible with the streaming interface
+                            // Skip socket emission during title generation
+                            if (global.currentSocket && text && !opts.isTitleGeneration) {
+                                // Split text into words for pseudo-streaming effect
+                                const words = text.split(' ');
+                                for (let i = 0; i < words.length; i++) {
+                                    const chunk = i === 0 ? words[i] : ' ' + words[i];
+                                    global.currentSocket.emit('llmresponsesend', { chunk: chunk });
+                                    // Small delay to simulate streaming
+                                    await new Promise(resolve => setTimeout(resolve, 50));
+                                }
+
+                                // Emit completion signal after streaming is done
+                                global.currentSocket.emit('llmresponsesend', {
+                                    chunk: '',
+                                    proccedMsg: text,
+                                    done: true
+                                });
+                                
+                                // Add an explicit socket event for completion to ensure client receives it
+                                global.currentSocket.emit('llmresponsedone', {
+                                    messageId: opts.messageId,
+                                    chatId: opts.chatId,
+                                    text: text
+                                });
+                                
+                                // Trigger title generation for Ollama models
+                                if (opts.query && opts.chatId) {
+                                    console.log(`🔍 [OLLAMA] Triggering title generation for chat: ${opts.chatId}`);
+                                    global.currentSocket.emit(SOCKET_EVENTS.GENERATE_TITLE_BY_LLM, {
+                                        query: opts.query,
+                                        code: AI_MODAL_PROVIDER.OLLAMA,
+                                        apiKey: opts.baseUrl || null,
+                                        chatId: opts.chatId
+                                    });
+                                }
+                                
+                                // Save the Ollama response to the database
+                                try {
+                                    const { createLLMConversation } = require('./thread');
+                                    await createLLMConversation({
+                                        query: opts.query || messages.find(m => m.role === 'user')?.content || '',
+                                        answer: text,
+                                        chatId: opts.chatId,
+                                        messageId: opts.messageId,
+                                        usedCredit: 1,
+                                        responseModel: modelName,
+                                        responseAPI: 'ollama',
+                                        apiKey: opts.apiKey,
+                                        user: opts.user,
+                                        companyId: opts.companyId,
+                                        promptId: opts.promptId,
+                                        customGptId: opts.customGptId
+                                    });
+                                    console.log(`✅ [OLLAMA] Response saved to database successfully`);
+                                } catch (saveError) {
+                                    console.error(`❌ [OLLAMA] Error saving response to database:`, saveError);
+                                }
+                                
+                                console.log(`✅ [OLLAMA] Streaming complete with done signal and explicit llmresponsedone event`);
+                            }
+
+                            return { content: text };
+                        } else {
+                            const last = messages[messages.length - 1] || { role: 'user', content: '' };
+                            console.log(`🔍 [OLLAMA] Using generate mode with prompt: "${last.content}"`);
+                            const res = await ollamaService.generate({
+                                prompt: last.content || '',
+                                model: modelName,
+                                baseUrl,
+                                stream: false,
+                                userId: opts.userId,
+                                companyId: opts.companyRedisId,
+                                options: { temperature: baseConfig.temperature }
+                            });
+                            console.log(`🔍 [OLLAMA] Generate response:`, JSON.stringify(res, null, 2));
+                            const text = res?.text || res?.response || res?.content || '';
+                            console.log(`🔍 [OLLAMA] Extracted text: "${text}"`);
+
+                            // Simulate streaming by emitting the complete response as chunks
+                            // This makes Ollama compatible with the streaming interface
+                            // Skip socket emission during title generation
+                            if (global.currentSocket && text && !opts.isTitleGeneration) {
+                                console.log(`📡 [OLLAMA] Emitting response via socket streaming`);
+                                // Split text into words for pseudo-streaming effect
+                                const words = text.split(' ');
+                                for (let i = 0; i < words.length; i++) {
+                                    const chunk = i === 0 ? words[i] : ' ' + words[i];
+                                    global.currentSocket.emit('llmresponsesend', { chunk: chunk });
+                                    // Small delay to simulate streaming
+                                    await new Promise(resolve => setTimeout(resolve, 50));
+                                }
+
+                                // Emit completion signal after streaming is done
+                                global.currentSocket.emit('llmresponsesend', {
+                                    chunk: '',
+                                    proccedMsg: text,
+                                    done: true
+                                });
+                                
+                                // Add an explicit socket event for completion to ensure client receives it
+                                global.currentSocket.emit('llmresponsedone', {
+                                    messageId: opts.messageId,
+                                    chatId: opts.chatId,
+                                    text: text
+                                });
+                                
+                                // Trigger title generation for Ollama models
+                                if (opts.query && opts.chatId) {
+                                    console.log(`🔍 [OLLAMA] Triggering title generation for chat: ${opts.chatId}`);
+                                    global.currentSocket.emit(SOCKET_EVENTS.GENERATE_TITLE_BY_LLM, {
+                                        query: opts.query,
+                                        code: AI_MODAL_PROVIDER.OLLAMA,
+                                        apiKey: opts.baseUrl || null,
+                                        chatId: opts.chatId
+                                    });
+                                }
+                                
+                                // Save the Ollama response to the database
+                                try {
+                                    const { createLLMConversation } = require('./thread');
+                                    await createLLMConversation({
+                                        query: opts.query || last.content || '',
+                                        answer: text,
+                                        chatId: opts.chatId,
+                                        messageId: opts.messageId,
+                                        usedCredit: 1,
+                                        responseModel: modelName,
+                                        responseAPI: 'ollama',
+                                        apiKey: opts.apiKey,
+                                        user: opts.user,
+                                        companyId: opts.companyId,
+                                        promptId: opts.promptId,
+                                        customGptId: opts.customGptId
+                                    });
+                                    console.log(`✅ [OLLAMA] Response saved to database successfully`);
+                                } catch (saveError) {
+                                    console.error(`❌ [OLLAMA] Error saving response to database:`, saveError);
+                                }
+                                
+                                console.log(`✅ [OLLAMA] Streaming complete with done signal and explicit llmresponsedone event`);
+                            }
+
+                            return { content: text };
+                        }
+                    } catch (error) {
+                        logger.error('❌ [OLLAMA] Invocation error:', error);
+                        // Provide a friendly message similar to other providers
+                        return { content: 'Ollama is unreachable or failed to respond. Please ensure your Ollama server is running.' };
+                    }
+                }
+            };
+        },
+        [AI_MODAL_PROVIDER.DEEPSEEK]: () => chatOpenRouterWithCallback(modelName, { ...opts, apiKey: opts.apiKey }, costCallback),
+        [AI_MODAL_PROVIDER.LLAMA4]: () => toolChatOpenRouterWithCallback(modelName, { ...opts, apiKey: opts.apiKey }, costCallback, selectedTools),
+        [AI_MODAL_PROVIDER.GROK]: () => toolChatOpenRouterWithCallback(modelName, { ...opts, apiKey: opts.apiKey }, costCallback, selectedTools),
+        [AI_MODAL_PROVIDER.QWEN]: () => chatOpenRouterWithCallback(modelName, { ...opts, apiKey: opts.apiKey }, costCallback),
+        [AI_MODAL_PROVIDER.PERPLEXITY]: () => ({
+            _isPerplexityRaw: true,
+            model: modelName,
+            apiKey: opts.apiKey,
+            streaming: opts.streaming ?? true,
+            temperature: opts.temperature ?? 0.7,
+            maxTokens: opts.maxTokens || null,
+            search_recency_filter: 'month',
+            search_domain_filter: Array.isArray(opts.searchDomains) ? opts.searchDomains : undefined,
+            web_search_options: opts.web_search_options,
+            extra_body: opts.extra_body,
+            costCallback: costCallback,
+            threadId: opts.threadId
+        }),
     }
     
-    
-    const selectedLLM = llmConfig[provider];
-    if (!selectedLLM) {
-        logger.error(`❌ [LLM_FACTORY] No LLM configuration found for provider: ${provider}`);
-        logger.error('Available providers:', Object.keys(llmConfig));
-        logger.error('Using fallback to OpenAI');
-        return llmConfig[AI_MODAL_PROVIDER.OPEN_AI];
+
+    console.log(`🔍 [LLM_FACTORY] Looking for provider ${provider} in llmConfig`);
+    console.log(`🔍 [LLM_FACTORY] Available providers:`, Object.keys(llmConfig));
+
+    const selectedLLMFactory = llmConfig[provider];
+    if (!selectedLLMFactory) {
+        console.error(`❌ [LLM_FACTORY] No LLM configuration found for provider: ${provider}`);
+        console.error('Available providers:', Object.keys(llmConfig));
+        console.error('Using fallback to OpenAI');
+        return await llmConfig[AI_MODAL_PROVIDER.OPEN_AI]();
     }
+
+    console.log(`✅ [LLM_FACTORY] Selected LLM factory for provider: ${provider}`);
+
+    // Call the factory function to create the LLM
+    const selectedLLM = await selectedLLMFactory();
     
     
     // Store callback reference on LLM for later access if needed
@@ -792,10 +1045,8 @@ async function buildGraph(model, data, agentDetails = null) {
     const needsTools = queryNeedsTools(data.query);
     
     if (needsTools) {
-        console.log('🔧 [OPTIMIZATION] Using cached MCP tools for tool-requiring query');
         mcpTools = await getCachedMCPClient();
     } else {
-        console.log('🚀 [ULTRA-FAST] Bypassing MCP initialization for simple query');
     }
     
     // Store MCP tools in global state for access in callTool function
@@ -803,65 +1054,26 @@ async function buildGraph(model, data, agentDetails = null) {
     getToolExecutorMap(agentDetails, mcpTools);
     const workflow = new StateGraph({ channels: graphState });
     
-    // Use agent-specific tool executor if available
-    const toolExecutor = (state) => callTool(state, agentDetails, data.user);
-    
-    // Pass agentDetails to callModel
-    workflow.addNode('agent', state => callModel(state, model, data, agentDetails));
-    workflow.addNode('tools', toolExecutor);
-    workflow.setEntryPoint('agent');
-    workflow.addConditionalEdges('agent', shouldContinue, {
-        tools: 'tools',
-        end: END,
-    });
-    workflow.addEdge('tools', 'agent');
-    const app = workflow.compile();
-    return app;
-}
-
-function pickContent(result) {
-    // Handle Pinecone result structure
-    if (result.metadata?.text) {
-        return result.metadata.text;
+    // Check if this is a supervisor agent with agents
+    if (agentDetails && agentDetails.type === 'supervisor' && agentDetails.Agents && agentDetails.Agents.length > 0) {
+        // Build supervisor agent workflow
+        return await buildSupervisorGraph(workflow, model, data, agentDetails);
+    } else {
+        // Build regular agent workflow
+        const toolExecutor = (state) => callTool(state, agentDetails, data.user);
+        
+        // Pass agentDetails to callModel
+        workflow.addNode('agent', state => callModel(state, model, data, agentDetails));
+        workflow.addNode('tools', toolExecutor);
+        workflow.setEntryPoint('agent');
+        workflow.addConditionalEdges('agent', shouldContinue, {
+            tools: 'tools',
+            end: END,
+        });
+        workflow.addEdge('tools', 'agent');
+        const app = workflow.compile();
+        return app;
     }
-    
-    // Handle legacy payload structure
-    if (result.payload) {
-        return result.payload?.content ?? result.payload?.text ?? result.payload?.page_content ?? result.payload?.chunk ?? '';
-    }
-    
-    // Handle direct content
-    return result?.content ?? result?.text ?? result?.page_content ?? result?.chunk ?? '';
-}
-
-// Helper function to build RAG context from search results
-function buildRagContext(searchResults, query) {
-    if (!searchResults || searchResults.length === 0) {
-        return '\n\nNote: No specific relevant documents found for this query, but RAG context is available.\n';
-    }
-    
-    let enhancedContext = '\n\n📄 RELEVANT DOCUMENT CONTENT:\n\n';
-    let totalContentLength = 0;
-    const maxContentLength = 3000; // Increased limit for better context
-    
-    searchResults.forEach((result, index) => {
-        const content = pickContent(result);
-        if (content && totalContentLength < maxContentLength) {
-            const remainingLength = maxContentLength - totalContentLength;
-            const truncatedContent = content.length > remainingLength ? 
-                content.substring(0, remainingLength) + '...' : content;
-            
-            const filename = result.metadata?.filename || result.sourceFile || 'unknown';
-            enhancedContext += `--- Document ${index + 1} (${filename}) ---\n`;
-            enhancedContext += truncatedContent;
-            enhancedContext += '\n\n';
-            
-            totalContentLength += truncatedContent.length;
-        }
-    });
-    
-    enhancedContext += 'Please use the above document content to answer the user\'s question. The content is from uploaded files and should be used as the primary source for your response.\n';
-    return enhancedContext;
 }
 
 // Helper function to check if RAG should be enabled
@@ -897,184 +1109,6 @@ function shouldEnableAgent(data) {
     return hasAgent;
 }
 
-// Helper function to validate pinecone index and files
-async function validatePineconeIndex(uploadedFiles, companyId) {
-    try {
-        // Check if pinecone index exists and has files
-        const pineconeFiles = await getFilesListFromIndex(companyId);
-        
-        if (!pineconeFiles || pineconeFiles.length === 0) {
-            throw new Error('Pinecone index is empty or not accessible');
-        }
-        
-        // Check if any of the uploaded files exist in pinecone index
-        // First try to match by fileId, then fall back to filename for backward compatibility
-        const availableFileIds = pineconeFiles.map(f => f.fileId).filter(id => id); // Filter out undefined fileIds
-        const availableFilenames = pineconeFiles.map(f => f.filename); // Get all filenames for fallback
-        
-        const uploadedFileIds = uploadedFiles.map(f => f._id?.toString()).filter(id => id); // Get MongoDB ObjectIds as strings
-        const uploadedFilenames = uploadedFiles.map(f => f.name || f.filename).filter(name => name); // Get filenames for fallback
-        
-        // First try to match by fileId
-        let matchingFileIds = uploadedFileIds.filter(uploadedId => 
-            availableFileIds.some(availableId => availableId === uploadedId)
-        );
-        
-        // If no matches by fileId, fall back to filename matching for backward compatibility
-        if (matchingFileIds.length === 0) {
-            const matchingFilenames = uploadedFilenames.filter(uploadedName => 
-                availableFilenames.some(availableName => 
-                    availableName === uploadedName || 
-                    availableName.includes(uploadedName) || 
-                    uploadedName.includes(availableName)
-                )
-            );
-            
-            if (matchingFilenames.length > 0) {
-                return true;
-            }
-        } else {
-            return true;
-        }
-        
-        if (matchingFileIds.length === 0) {
-            throw new Error('None of the uploaded files match files in pinecone index (by fileId or filename)');
-        }
-        
-        return true;
-        
-    } catch (error) {
-        logger.error('Pinecone index validation failed:', error.message);
-        return false;
-    }
-}
-
-// Helper function to map uploaded files to pinecone index files
-async function mapFilesToPineconeIndex(uploadedFiles, companyId) {
-    try {
-        // First validate the pinecone index
-        const isValid = await validatePineconeIndex(uploadedFiles, companyId);
-        if (!isValid) {
-            throw new Error('Pinecone index validation failed');
-        }
-        
-        // Get all files from pinecone index
-        const pineconeFiles = await getFilesListFromIndex(companyId);
-        
-        // Map uploaded files to pinecone files
-        const mappedFiles = [];
-        
-        for (const uploadedFile of uploadedFiles) {
-            const uploadedFileId = uploadedFile._id?.toString();
-            const uploadedFileName = uploadedFile.name || uploadedFile.filename;
-            
-            if (!uploadedFileName) {
-                continue;
-            }
-            
-            // First try to find matching file in pinecone index by fileId
-            let matchingPineconeFile = null;
-            
-            if (uploadedFileId) {
-                matchingPineconeFile = pineconeFiles.find(pf => 
-                    pf.fileId === uploadedFileId
-                );
-            }
-            
-            // If no match by fileId, fall back to filename matching for backward compatibility
-            if (!matchingPineconeFile) {
-                matchingPineconeFile = pineconeFiles.find(pf => 
-                    pf.filename === uploadedFileName || 
-                    pf.filename.includes(uploadedFileName) || 
-                    uploadedFileName.includes(pf.filename)
-                );
-            }
-            
-            if (matchingPineconeFile) {
-                mappedFiles.push({
-                    ...uploadedFile,
-                    pineconeFilename: matchingPineconeFile.filename,
-                    pineconeFileId: matchingPineconeFile.fileId || null, // Can be null for old files
-                    pineconeCount: matchingPineconeFile.count,
-                    matchType: matchingPineconeFile.fileId ? 'fileId' : 'filename' // Track how we matched
-                });
-            }
-        }
-        
-        if (mappedFiles.length === 0) {
-            throw new Error('No files could be mapped to pinecone index');
-        }
-        
-        return mappedFiles;
-        
-    } catch (error) {
-        logger.error('Error mapping files to pinecone index:', error);
-        throw error; // Re-throw to handle in the calling function
-    }
-}
-
-// Helper function to perform vector search within specific files
-async function searchWithinFiles(query, mappedFiles, companyId, options = {}) {
-    const { limit = 5, scoreThreshold = 0.15 } = options;  // Updated default to match Pinecone threshold
-    const allResults = [];
-    
-    try {
-        for (const mappedFile of mappedFiles) {
-            let fileResults = null;
-            
-            // Try to search by fileId first (for new files)
-            if (mappedFile.pineconeFileId) {
-                
-                fileResults = await searchWithinFileByFileId(
-                    companyId,
-                    mappedFile.pineconeFileId, 
-                    query, 
-                    Math.ceil(limit / mappedFiles.length)
-                );
-            }
-            
-            // If no results by fileId or fileId is null, fall back to filename search (for old files)
-            if (!fileResults || fileResults.length === 0) {
-                if (mappedFile.pineconeFilename) {
-                    
-                    fileResults = await searchWithinFileByName(
-                        companyId,
-                        mappedFile.pineconeFilename, 
-                        query, 
-                        Math.ceil(limit / mappedFiles.length)
-                    );
-                }
-            }
-            
-            if (fileResults && fileResults.length > 0) {
-                // Filter by score threshold and add file context
-                const filteredResults = fileResults
-                    .filter(result => result.score >= scoreThreshold)
-                    .map(result => ({
-                        ...result,
-                        sourceFile: mappedFile.filename || mappedFile.name,
-                        sourceFileId: mappedFile.pineconeFileId,
-                        pineconeFilename: mappedFile.pineconeFilename,
-                        matchType: mappedFile.matchType || 'unknown'
-                    }));
-                
-                allResults.push(...filteredResults);
-            }
-        }
-        
-        // Sort by score and limit results
-        const sortedResults = allResults
-            .sort((a, b) => b.score - a.score)
-            .slice(0, limit);
-        
-        return sortedResults;
-        
-    } catch (error) {
-        logger.error('Error searching within files:', error);
-        return [];
-    }
-}
-
 // Helper function to build agent context from system prompt, goals, and instructions
 function buildAgentContext(agent) {
     let agentContext = '\n\nAgent Configuration:\n';
@@ -1102,25 +1136,12 @@ async function fetchAgentDetails(agentId) {
 }
 
 async function streamAndLog(app, data, socket, threadId = null) {
-    console.log("🚀 ~ streamAndLog ~ data:", data)
     let proccedMsg = '';
-    let costCallback = null;
-    
-    try {
-        // Extract cost callback from the model if available
-        if (app?.llm?._costCallback) {
-            costCallback = app.llm._costCallback;
-        }
-    } catch (error) {
-        logger.error('Error extracting cost callback:', error);
-    }
-    
     // Set global query data for tool execution (including API key)
     global.currentQueryData = data;
     
     // Check flow type and build appropriate context
     let inputs;
-    let isRagEnabled = false;
     let isAgentEnabled = false;
     let agentDetails = null;
     
@@ -1134,10 +1155,10 @@ async function streamAndLog(app, data, socket, threadId = null) {
                 isAgentEnabled = true;
                 
                 // Notify frontend that agent is being used
-                socket.emit(SOCKET_EVENTS.LLM_RESPONSE_SEND, {
-                    event: llmStreamingEvents.AGENT_ENABLED,
-                    chunk: `Agent activated`
-                });
+                // socket.emit(SOCKET_EVENTS.LLM_RESPONSE_SEND, {
+                //     event: llmStreamingEvents.AGENT_ENABLED,
+                //     chunk: `Agent activated`
+                // });
             }
         } catch (error) {
             logger.error('Agent flow failed:', error);
@@ -1434,38 +1455,7 @@ async function streamAndLog(app, data, socket, threadId = null) {
                 }
             },
 
-            [langGraphEventName.ON_CHAIN_MODEL_END]: async () => { 
-                // Update token usage in database if cost callback is available
-                if (costCallback && threadId) {
-                    try {
-                    
-                    const usage = costCallback.getUsage();
-                    
-                    if (usage.totalTokens > 0) {
-                        await costCallback.updateTokenUsage(threadId, usage);
-                    }
-                    } catch (error) {
-                    logger.error(`❌ [STREAM_LOG] Error updating token usage for thread ${threadId}:`, error);
-                }
-                } else {
-                }
-
-                // Deduct message credit from user (similar to Python implementation)
-                // if (data.companyId || (data.user && data.user.company && data.user.company.id)) {
-                //     try {
-                //         const companyId = data.companyId || data.user.company.id;
-                //         // Use model-specific credit amount from frontend (msgCredit field) and ensure it's stored as double
-                //         const creditValue = Number((parseFloat(data.msgCredit || data.usedCredit || 1.0)).toFixed(1));
-                        
-                        
-                //         // const creditResult = await deductUserMsgCredit(companyId, creditValue);
-                //     } catch (error) {
-                //         logger.error(`❌ [CREDIT_DEDUCT] Error deducting credit:`, error);
-                //     }
-                // } else {
-                //     logger.warn(`⚠️ [CREDIT_DEDUCT] No company ID found in data for credit deduction`);
-                // }
-                
+            [langGraphEventName.ON_CHAIN_MODEL_END]: async () => {                 
                 socket.emit(SOCKET_EVENTS.LLM_RESPONSE_SEND, {
                     chunk: llmStreamingEvents.RESPONSE_DONE,
                     proccedMsg,
@@ -1498,33 +1488,64 @@ async function streamAndLog(app, data, socket, threadId = null) {
                 }
             },
         };
+        // Helper to check if a stop has been requested for this chat
+        let sockets = global.io.sockets;
+        let stopRequested = false;
+
+        // Styled stop note to visually distinguish from streamed answer
+        const STOP_NOTE_HTML = "\n\n<div style=\"text-align:right; font-size:14px; font-style:italic; color:#8f8f8f; background:#fff; padding:8px 12px; display:inline-block;\">✋ Generation stopped by you</div>\n";
+
+        const forceStopHandler = catchSocketAsync((value) => {
+            if (value.chatId === data.chatId) {
+                const roomName = `${SOCKET_ROOM_PREFIX.CHAT}${value.chatId}`;
+                sockets.to(roomName).emit(SOCKET_EVENTS.FORCE_STOP, { proccedMsg: value.proccedMsg + STOP_NOTE_HTML, userId: value.userId });
+                stopRequested = true;
+            }
+        });
+
+        // Listen once for stop; upon receiving, mark and break the stream loop
+        socket.once(SOCKET_EVENTS.FORCE_STOP, forceStopHandler);
+
         for await (const chunk of app.streamEvents(inputs, {
             streamMode: 'messages',
             version: 'v2',
         })) {
+            if (stopRequested) {
+                logger.info('isStopRequested', stopRequested);
+                proccedMsg += STOP_NOTE_HTML;
+                break;
+            }
+
             const handler = eventHandlers[chunk.event];
             if (handler) {
                 handler(chunk);
             }
         }
+        await createLLMConversation({ 
+            ...data, 
+            answer: proccedMsg, 
+            usedCredit: data.usedCredit || 1 
+        });
     } catch (error) {
         logger.error('error streamAndLog', error);
         
         // Send error message to frontend
         socket.emit(SOCKET_EVENTS.LLM_RESPONSE_SEND, {
+            event: llmStreamingEvents.CONVERSATION_ERROR,
             chunk: llmStreamingEvents.RESPONSE_ERROR_MESSAGE,
         });
     } finally {
-        if (proccedMsg) {
-            try {
-                await createLLMConversation({ 
-                    ...data, 
-                    answer: proccedMsg, 
-                    usedCredit:  data.usedCredit || 1 
-                });
-            } catch (saveError) {
-                logger.error('❌ Error saving conversation to database:', saveError);
+        // Clean up stop listeners if they never fired
+        try {
+            if (typeof forceStopHandler === 'function') {
+                socket.off(SOCKET_EVENTS.FORCE_STOP, forceStopHandler);
             }
+            if (typeof stopStreamingHandler === 'function') {
+                socket.off(SOCKET_EVENTS.STOP_STREAMING, stopStreamingHandler);
+            }
+        } catch (cleanupError) {
+            // Non-fatal: log and continue
+            logger.warn('Stop listener cleanup warning:', cleanupError?.message || cleanupError);
         }
         proccedMsg = '';
         
@@ -1573,9 +1594,10 @@ async function getAgentModelConfig(agentDetails, data) {
             // Return agent-specific configuration
             const agentConfig = {
                 model: responseModel.name,
-                apiKey: responseModel.config?.apikey || data.apiKey,
+                apiKey: data.apiKey,
                 llmProvider: inferredProvider,
-                temperature: responseModel.extraConfig?.temperature || 0.7,
+                baseUrl: responseModel.config?.baseUrl ? safeDecryptApiKey(responseModel.config.baseUrl) : undefined,
+                temperature: 0.7,
                 streaming: true
             };
             
@@ -1630,7 +1652,8 @@ function mapProviderCode(code) {
         'azure': AI_MODAL_PROVIDER.AZURE_OPENAI_SERVICE,
         'huggingface': AI_MODAL_PROVIDER.HUGGING_FACE,
         'local': AI_MODAL_PROVIDER.LOCAL_LLM,
-        'anyscale': AI_MODAL_PROVIDER.ANYSCALE
+        'anyscale': AI_MODAL_PROVIDER.ANYSCALE,
+        'ollama': AI_MODAL_PROVIDER.OLLAMA
     };
     
     // Check exact matches first
@@ -1648,9 +1671,13 @@ function mapProviderCode(code) {
 }
 
 async function toolExecutor(data, socket) {
+
+
+    // Make socket available globally for Ollama streaming
+    global.currentSocket = socket;
+
     try {
         let apiKey, model, app, agentDetails = null;
-        
 
         // Map the provider code to the correct constant
         const mappedProvider = mapProviderCode(data.code);
@@ -1661,8 +1688,50 @@ async function toolExecutor(data, socket) {
             streaming: true,
             query: data.query,
             threadId: data.threadId,
-            userId: data.user.id
+            userId: data.user.id,
+            chatId: data.chatId,
+            messageId: data.messageId,
+            user: data.user,
+            companyId: data.companyId || data.user?.company?.id,
+            promptId: data.promptId,
+            customGptId: data.customGptId
         };
+        // Inject Ollama baseUrl from company settings when applicable
+        if (mappedProvider === AI_MODAL_PROVIDER.OLLAMA) {
+            try {
+                const companyId = data.companyId || data.user?.company?.id;
+                const settings = await ollamaService.getCompanyOllamaSettings(companyId);
+                const resolvedBaseUrl = settings?.baseUrl || LINK.OLLAMA_API_URL;
+                options.baseUrl = resolvedBaseUrl;
+            } catch (e) {
+                options.baseUrl = LINK.OLLAMA_API_URL;
+            }
+        }
+        // RAW Perplexity routing for all Perplexity models
+        const isPerplexity = mappedProvider === AI_MODAL_PROVIDER.PERPLEXITY;
+        if (isPerplexity) {
+            const rawMessages = [['user', data.query || '']];
+            await perplexityRawStream({
+                apiKey: decryptedData(data.apiKey),
+                model: data.model,
+                messages: rawMessages,
+                data,
+                socket,
+                threadId: data.threadId,
+                options: {
+                    temperature: data.temperature,
+                    maxTokens: data.maxTokens,
+                    search_recency_filter: 'month',
+                    search_domain_filter: Array.isArray(data.searchDomains) ? data.searchDomains : undefined,
+                    web_search_options: data.web_search_options,
+                    extra_body: data.extra_body,
+                    encryptedKey: data.apiKey,
+                    companyRedisId: data.user?.company?.id,
+                    additionalData: {},
+                },
+            });
+            return;
+        }
         if (shouldEnableAgent(data)) {
             agentDetails = await fetchAgentDetails(data.customGptId);
             if (agentDetails) {
@@ -1673,21 +1742,43 @@ async function toolExecutor(data, socket) {
                     // Map the agent's provider to the correct format
                     const mappedAgentProvider = mapProviderCode(agentModelConfig.llmProvider);
                     
-                    model = await llmFactory(agentModelConfig.model, {...options, apiKey: apiKey});
+                    const factoryOpts = { ...options, apiKey: apiKey };
+                    if (mappedAgentProvider === AI_MODAL_PROVIDER.OLLAMA && agentModelConfig.baseUrl) {
+                        factoryOpts.baseUrl = agentModelConfig.baseUrl;
+                    }
+                    model = await llmFactory(agentModelConfig.model, factoryOpts);
                 } else {
                     // Fallback to user's model configuration
-                    apiKey = safeDecryptApiKey(data.apiKey);
-                    model = await llmFactory(data.model, {...options, apiKey: apiKey});
+                    if (mappedProvider === AI_MODAL_PROVIDER.OLLAMA) {
+                        // For Ollama, apiKey field contains the baseUrl, not an encrypted key
+                        apiKey = null; // No API key needed for Ollama
+                        model = await llmFactory(data.model, options);
+                    } else {
+                        apiKey = safeDecryptApiKey(data.apiKey);
+                        model = await llmFactory(data.model, {...options, apiKey: apiKey});
+                    }
                 }
             } else {
                 // Agent not found, use user's model configuration
-                apiKey = decryptedData(data.apiKey);
-                model = await llmFactory(data.model, {...options, apiKey: apiKey});
+                if (mappedProvider === AI_MODAL_PROVIDER.OLLAMA) {
+                    // For Ollama, apiKey field contains the baseUrl, not an encrypted key
+                    apiKey = null; // No API key needed for Ollama
+                    model = await llmFactory(data.model, options);
+                } else {
+                    apiKey = decryptedData(data.apiKey);
+                    model = await llmFactory(data.model, {...options, apiKey: apiKey});
+                }
             }
         } else {
             // Normal flow: use user's model configuration
-            apiKey = decryptedData(data.apiKey);
-            model = await llmFactory(data.model, {...options, apiKey: apiKey});
+            if (mappedProvider === AI_MODAL_PROVIDER.OLLAMA) {
+                // For Ollama, apiKey field contains the baseUrl, not an encrypted key
+                apiKey = null; // No API key needed for Ollama
+                model = await llmFactory(data.model, options);
+            } else {
+                apiKey = decryptedData(data.apiKey);
+                model = await llmFactory(data.model, {...options, apiKey: apiKey});
+            }
         }
         
         // Build the graph with the selected model and agent details
@@ -1698,13 +1789,9 @@ async function toolExecutor(data, socket) {
         
     } catch (error) {
         logger.error('Error in toolExecutor:', error);
-        
-        // Emit error to frontend
-        socket.emit(SOCKET_EVENTS.LLM_RESPONSE_SEND, {
-            chunk: llmStreamingEvents.RESPONSE_ERROR_MESSAGE,
-        });
     }
 }
+
 
 async function generateTitleByLLM(payload) {
     try {
@@ -1723,7 +1810,7 @@ async function generateTitleByLLM(payload) {
             [AI_MODAL_PROVIDER.LLAMA4]: 'llama-3.1-8b-instruct',
             [AI_MODAL_PROVIDER.GROK]: 'grok-2-1212',
             [AI_MODAL_PROVIDER.QWEN]: 'qwq-32b',
-            [AI_MODAL_PROVIDER.PERPLEXITY]: 'perplexity-3.5-sonnet',
+            [AI_MODAL_PROVIDER.PERPLEXITY]: 'sonar',
         };
         
         const defaultModel = defaultModelMap[mappedProvider] || defaultModelMap[AI_MODAL_PROVIDER.OPEN_AI];
@@ -1769,7 +1856,7 @@ async function enhancePromptByLLM(payload) {
             throw new Error('Invalid or missing API key');
         }
         
-        const model = await llmFactory(MODAL_NAME.GPT_4O_MINI, { 
+        const model = await llmFactory(MODAL_NAME.GPT_4_1_MINI, { 
             streaming: false, 
             apiKey: decryptedApiKey, 
             llmProvider: AI_MODAL_PROVIDER.OPEN_AI 
@@ -1780,10 +1867,252 @@ async function enhancePromptByLLM(payload) {
             new HumanMessage(query)
         ];
         const result = await model.invoke(messages);
-        const parsedResult = JSON.parse(result.content);
-        return parsedResult;
+        return result.content;
     } catch (error) {
         handleError(error, 'Error in enhancePromptByLLM');
+    }
+}
+
+// Helper function to build supervisor agent workflow
+async function buildSupervisorGraph(workflow, model, data, supervisorAgent) {
+    try {
+        // Fetch agent details
+        const agentDetails = await Promise.all(
+            supervisorAgent.Agents.map(async (agentId) => {
+                try {
+                    const agent = await CustomGpt.findById(agentId).lean();
+                    return agent;
+                } catch (error) {
+                    logger.error(`Error fetching tool agent ${agentId}:`, error);
+                    return null;
+                }
+            })
+        );
+        
+        // Filter out null agents
+        const validAgents = AgentDetails.filter(agent => agent !== null);
+        
+        if (validAgents.length === 0) {
+            logger.warn('No valid agents found for supervisor, falling back to regular workflow');
+            // Fallback to regular workflow
+            const toolExecutor = (state) => callTool(state, supervisorAgent, data.user);
+            workflow.addNode('supervisor', state => callModel(state, model, data, supervisorAgent));
+            workflow.addNode('tools', toolExecutor);
+            workflow.setEntryPoint('supervisor');
+            workflow.addConditionalEdges('supervisor', shouldContinue, {
+                tools: 'tools',
+                end: END,
+            });
+            workflow.addEdge('tools', 'supervisor');
+            return workflow.compile();
+        }
+        
+        // Add supervisor node
+        workflow.addNode('supervisor', state => callSupervisorModel(state, model, data, supervisorAgent, validAgents));
+        
+        // Add tool agent nodes
+        validAgents.forEach((Agent, index) => {
+            const nodeName = `tool_agent_${index}`;
+            workflow.addNode(nodeName, state => callAgent(state, model, data, Agent, supervisorAgent));
+        });
+        
+        // Add tools node for regular tools (web search, image generation, etc.)
+        const toolExecutor = (state) => callTool(state, supervisorAgent, data.user);
+        workflow.addNode('tools', toolExecutor);
+        
+        // Set entry point
+        workflow.setEntryPoint('supervisor');
+        
+        // Add conditional edges from supervisor
+        workflow.addConditionalEdges('supervisor', (state) => supervisorShouldContinue(state, validAgents), {
+            ...validAgents.reduce((acc, _, index) => {
+                acc[`tool_agent_${index}`] = `tool_agent_${index}`;
+                return acc;
+            }, {}),
+            tools: 'tools',
+            end: END,
+        });
+        
+        // Add edges from agents back to supervisor
+        validAgents.forEach((_, index) => {
+            workflow.addEdge(`tool_agent_${index}`, 'supervisor');
+        });
+        
+        // Add edge from tools back to supervisor
+        workflow.addEdge('tools', 'supervisor');
+        
+        return workflow.compile();
+        
+    } catch (error) {
+        logger.error('Error building supervisor graph:', error);
+        // Fallback to regular workflow
+        const toolExecutor = (state) => callTool(state, supervisorAgent, data.user);
+        workflow.addNode('supervisor', state => callModel(state, model, data, supervisorAgent));
+        workflow.addNode('tools', toolExecutor);
+        workflow.setEntryPoint('supervisor');
+        workflow.addConditionalEdges('supervisor', shouldContinue, {
+            tools: 'tools',
+            end: END,
+        });
+        workflow.addEdge('tools', 'supervisor');
+        return workflow.compile();
+    }
+}
+
+// Helper function for supervisor decision making
+function supervisorShouldContinue(state, Agents) {
+    const messages = state.messages;
+    const lastMessage = messages[messages.length - 1];
+    
+    if (lastMessage.tool_calls && lastMessage.tool_calls.length > 0) {
+        const toolCall = lastMessage.tool_calls[0];
+        
+        // Check if it's a tool agent call
+        const AgentMatch = toolCall.name.match(/^call_tool_agent_(\d+)$/);
+        if (AgentMatch) {
+            const agentIndex = parseInt(AgentMatch[1]);
+            if (agentIndex >= 0 && agentIndex < Agents.length) {
+                return `tool_agent_${agentIndex}`;
+            }
+        }
+        
+        // Check if it's a regular tool call
+        if (['web_search', 'generate_image', 'get_current_time'].includes(toolCall.name)) {
+            return 'tools';
+        }
+    }
+    
+    return 'end';
+}
+
+// Helper function to call supervisor model with tool agent options
+async function callSupervisorModel(state, model, data, supervisorAgent, Agents) {
+    try {
+        // Build system message with tool agent information
+        let systemMessage = supervisorAgent.systemPrompt || 'You are a supervisor agent that coordinates multiple agents.';
+        
+        systemMessage += '\n\nAvailable Agents:\n';
+        Agents.forEach((agent, index) => {
+            systemMessage += `${index + 1}. ${agent.title}: ${agent.description || agent.systemPrompt || 'No description available'}\n`;
+        });
+        
+        systemMessage += '\nTo delegate a task to a tool agent, use the call_tool_agent_X function where X is the agent index (0-based).';
+        
+        // Add tool agent functions to the model
+        const AgentFunctions = Agents.map((agent, index) => ({
+            name: `call_tool_agent_${index}`,
+            description: `Delegate task to ${agent.title}: ${agent.description || agent.systemPrompt || 'Tool agent'}`,
+            parameters: {
+                type: 'object',
+                properties: {
+                    task: {
+                        type: 'string',
+                        description: 'The specific task or query to delegate to this tool agent'
+                    }
+                },
+                required: ['task']
+            }
+        }));
+        
+        // Add regular tools
+        const regularTools = [
+            {
+                name: 'web_search',
+                description: 'Search the web for information',
+                parameters: {
+                    type: 'object',
+                    properties: {
+                        query: { type: 'string', description: 'Search query' }
+                    },
+                    required: ['query']
+                }
+            },
+            {
+                name: 'generate_image',
+                description: 'Generate an image using DALL-E',
+                parameters: {
+                    type: 'object',
+                    properties: {
+                        prompt: { type: 'string', description: 'Image generation prompt' }
+                    },
+                    required: ['prompt']
+                }
+            },
+            {
+                name: 'get_current_time',
+                description: 'Get the current date and time',
+                parameters: { type: 'object', properties: {} }
+            }
+        ];
+        
+        const allTools = [...AgentFunctions, ...regularTools];
+        
+        // Prepare messages with system message
+        const messages = [
+            new SystemMessage(systemMessage),
+            ...state.messages
+        ];
+        
+        // Call the model with tools
+        const response = await model.invoke(messages, { tools: allTools });
+        
+        return { messages: [...state.messages, response] };
+        
+    } catch (error) {
+        logger.error('Error in callSupervisorModel:', error);
+        // Fallback to regular model call
+        return await callModel(state, model, data, supervisorAgent);
+    }
+}
+
+// Helper function to call individual tool agent
+async function callAgent(state, model, data, Agent, supervisorAgent) {
+    try {
+        const messages = state.messages;
+        const lastMessage = messages[messages.length - 1];
+        
+        // Extract the task from the tool call
+        let task = data.query; // Default to original query
+        if (lastMessage.tool_calls && lastMessage.tool_calls.length > 0) {
+            const toolCall = lastMessage.tool_calls[0];
+            if (toolCall.args && toolCall.args.task) {
+                task = toolCall.args.task;
+            }
+        }
+        
+        // Build tool agent context
+        let AgentSystemMessage = Agent.systemPrompt || 'You are a specialized tool agent.';
+        AgentSystemMessage += `\n\nTask delegated from supervisor: ${task}`;
+        
+        // Create new message chain for tool agent
+        const AgentMessages = [
+            new SystemMessage(AgentSystemMessage),
+            new HumanMessage(task)
+        ];
+        
+        // Call the model for this tool agent
+        const response = await model.invoke(AgentMessages);
+        
+        // Create tool message to return to supervisor
+        const toolMessage = new ToolMessage({
+            content: response.content,
+            tool_call_id: lastMessage.tool_calls[0].id,
+            name: lastMessage.tool_calls[0].name
+        });
+        
+        return { messages: [...state.messages, toolMessage] };
+        
+    } catch (error) {
+        logger.error('Error in callAgent:', error);
+        
+        // Return error message
+        const errorMessage = new ToolMessage({
+            content: `Error executing tool agent: ${error.message}`,
+            tool_call_id: lastMessage.tool_calls[0].id,
+            name: lastMessage.tool_calls[0].name
+        });
+        
+        return { messages: [...state.messages, errorMessage] };
     }
 }
 
@@ -1794,5 +2123,5 @@ module.exports = {
     imageGenerationTool,
     currentTimeTool,
     enhancePromptByLLM,
-    llmFactory
+    llmFactory,
 }

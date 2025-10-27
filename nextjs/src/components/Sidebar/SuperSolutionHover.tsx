@@ -19,6 +19,8 @@ import { LINK, NODE_API_PREFIX } from '@/config/config';
 import { getIconComponent } from '@/utils/iconMapping';
 import { useMediaQuery } from '@/hooks/use-media-query';
 import DashboardIcon from '@/icons/DashboardIcon';
+import Image from 'next/image';
+import { DEFAULT_CHARACTERS_SOLUTION_APP } from '@/utils/common';
 
 interface SuperSolutionHoverProps {
     className?: string;
@@ -28,7 +30,7 @@ type AppData = {
     id: string;
     _id: string;
     name: string;
-    icon: string;
+    charimg: string;
     pathToOpen: string;
 };
 
@@ -52,10 +54,11 @@ const SuperSolutionHover = ({ className }: SuperSolutionHoverProps) => {
     // Mapping from app names to solution types
     const getSolutionTypeFromAppName = (appName: string): string => {
         const mapping: { [key: string]: string } = {
-            'AI Docs': 'ai-doc-editor',
+            'AI Docs': 'ai-docs',
             'AI Recruiter': 'ai-recruiter',
             'AI Landing Page Generator': 'ai-landing-page-generator',
-            'SEO Content Gen': 'seo-content-gen'
+            'Blog Engine': 'blog-engine',
+            'Call Analyzer': 'call-analyzer'
         };
         return mapping[appName] || '';
     };
@@ -142,7 +145,7 @@ const SuperSolutionHover = ({ className }: SuperSolutionHoverProps) => {
 
             {isLoading ? (
                 <div className="flex items-center justify-center py-8">
-                    <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-500"></div>
+                    <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-b7"></div>
                     <span className="ml-2 text-font-14 text-gray-500">
                         Loading Apps...
                     </span>
@@ -163,30 +166,33 @@ const SuperSolutionHover = ({ className }: SuperSolutionHoverProps) => {
                             }
                             className="group flex flex-col items-center gap-2 p-3 hover:bg-gray-50 rounded-xl transition-all duration-200 hover:scale-105"
                         >
-                            <div className="w-12 h-12 bg-gradient-to-br from-gray-100 to-gray-200 rounded-full flex items-center justify-center group-hover:from-blue-50 group-hover:to-blue-100 transition-all duration-200">
-                                {ROLE_TYPE.USER === user?.roleCode
+                            <div className="w-12 h-12 rounded-full flex items-center justify-center bg-gray-100 hover:bg-gray-200 transition-all duration-200">
+                            {ROLE_TYPE.USER === user?.roleCode
                                     ? (() => {
-                                          const IconComponent =
-                                              getIconComponent(
-                                                  solution?.appId
-                                                      ?.icon
-                                              );
-                                          return (
-                                              <IconComponent className="w-6 h-6 text-gray-600" />
+                                          return (  
+                                             <Image
+                                                src={solution?.appId?.charimg || DEFAULT_CHARACTERS_SOLUTION_APP[10]}
+                                                alt={solution?.appId?.name}
+                                                width={24}
+                                                height={24}
+                                                className="w-6 h-6 object-contain"
+                                             />
                                           );
                                       })()
                                     : (() => {
-                                          const IconComponent =
-                                              getIconComponent(
-                                                  solution?.icon
-                                              );
                                           return (
-                                              <IconComponent className="w-6 h-6 text-gray-600" />
+                                              <Image 
+                                                src={solution?.charimg || DEFAULT_CHARACTERS_SOLUTION_APP[10]}
+                                                alt={solution?.name}
+                                                width={24}
+                                                height={24}
+                                                className="w-6 h-6 object-contain"
+                                             />
                                           );
                                       })()
                                 }
                             </div>
-                            <span className="text-font-14 text-gray-700 text-center font-medium group-hover:text-blue-600 transition-colors">
+                            <span className="text-font-14 text-gray-700 text-center font-medium group-hover:text-b2 transition-colors">
                                 {ROLE_TYPE.USER === user?.roleCode
                                     ? solution?.appId?.name
                                     : solution?.name}
@@ -203,7 +209,7 @@ const SuperSolutionHover = ({ className }: SuperSolutionHoverProps) => {
                         className={'w-6 h-auto object-contain fill-b5'} 
                         />
                     </div>
-                    <p className="text-sm text-gray-500 mb-2">
+                    <p className="text-font-14 text-gray-500 mb-2">
                         No Apps available
                     </p>
                     <p className="text-xs text-gray-400">
@@ -280,7 +286,7 @@ const SuperSolutionHover = ({ className }: SuperSolutionHoverProps) => {
             </HoverCardTrigger>
             <HoverCardContent
                 side="right"
-                className="border-none bg-white shadow-xl rounded-xl p-6 min-w-[320px] max-w-[400px] z-50 rounded"
+                className="border-none bg-white shadow-xl rounded-xl p-6 min-w-[320px] max-w-[400px] z-50 rounded mt-[55px]"
                 sideOffset={18}
             >
                 {renderContent()}

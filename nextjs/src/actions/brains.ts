@@ -18,6 +18,7 @@ type CreateBrainActionData = {
     workspaceId: string;
     shareWith?: MemberType[];
     teams?: TeamsInput[];
+    charimg?: string;
 }
 
 export const fetchBrainList = async () => {
@@ -36,6 +37,7 @@ export async function createBrainAction(obj: BrainCreateType) {
         isShare: obj.isShare,
         workspaceId: obj.workspaceId,
         customInstruction: obj.customInstruction,
+        charimg: obj.charimg,
     };
     if (obj.isShare) {
         data.shareWith = obj.members.map((user) => {
@@ -264,3 +266,23 @@ export const addDefaultBrainAction = async (workspaceId: string, companyId: stri
 
     return response;
 }
+
+export const convertToSharedAction = async (brainId: string, data: { members?: ObjectType[], teams?: ObjectType[], customInstruction?: string }) => {
+    const sessionUser = await getSessionUser();
+    // Map members -> shareWith to match backend service signature
+    const payload = {
+        shareWith: data?.members || [],
+        teams: data?.teams || [],
+        customInstruction: data?.customInstruction || '',
+    };
+    const response = await serverApi({
+        action: MODULE_ACTIONS.CONVERT_TO_SHARED,
+        data: payload,
+        parameters: [brainId],
+    });
+    await Promise.all([
+        revalidateTagging(response, `${REVALIDATE_TAG_NAME.WORKSPACE}-${sessionUser.companyId}`),
+        revalidateTagging(response, `${REVALIDATE_TAG_NAME.BRAIN}-${sessionUser.companyId}`),
+    ]);
+    return response;
+};

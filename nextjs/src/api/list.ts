@@ -135,8 +135,11 @@ const apiList = {
     assigngpt: {
         url: () => `${WEB}/customgpt/assigngpt`,
         method: 'POST'
-       },   
-       
+    },
+    agents: {
+        url: (brainId: string) => `${WEB}/customgpt/agents/${brainId}`,
+        method: 'GET'
+    },
     chatTeamDelete:{
         url: (id: string)=>  `${WEB}/teamBrain/chat/delete/${id}`,
         method:'DELETE'  
@@ -167,6 +170,27 @@ const apiList = {
     },
     geminiKeyCheck: {
         url: () => `${WEB}/company/gemini/apikey`,
+        method: 'POST'
+    },
+    // For Ollama, no API key is required. Use a health/test endpoint.
+    ollamaKeyCheck: {
+        url: () => `ollama/health`,
+        method: 'GET'
+    },
+    // Ollama model management (download removed by request)
+    ollamaPullModel: {
+        url: () => `ollama/pull`,
+        method: 'POST'
+    },
+    ollamaListTags: {
+        url: () => `ollama/tags`,
+        method: 'GET'
+    },
+    // Save Ollama settings (baseUrl, apiKey, selected model) via Node API
+    saveOllamaSettings: {
+        // This hits the Node backend route: /napi/v1/ollama/save-settings
+        // The commonApi builds base as LINK.COMMON_NODE_API_URL + NODE_API_PREFIX
+        url: () => `ollama/save-settings`,
         method: 'POST'
     },
     brainListAll: {
@@ -204,6 +228,10 @@ const apiList = {
     globalSearch: {
         url: () => `${WEB}/message/global-search`,
         method: 'POST'
+    },
+    convertToShared: {
+        url: (id: string) => `${WEB}/brain/convert-to-shared/${id}`,
+        method: 'PUT'
     },
     getUsage: {
         url: () => `${ADMIN}/report/company-usage`,
@@ -280,6 +308,10 @@ const apiList = {
     },
     enhancePromptByLLM: {
         url: () => `${WEB}/chat/enhance-prompt`,
+        method: 'POST'
+    },
+    getImages: {
+        url: () => `${WEB}/chat/get/search-metadata`,
         method: 'POST'
     },
     commonUrl: (prefix: string, module: string) => ({
@@ -361,6 +393,10 @@ const apiList = {
         },
         changeRole: {
             url: () => `${prefix}/${module}/change-role`,
+            method: 'POST'
+        },
+        upload: {
+            url: () => `${prefix}/${module}/upload`,
             method: 'POST'
         }
     })

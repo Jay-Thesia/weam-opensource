@@ -1,4 +1,5 @@
 import { ProAgentCode } from "@/types/common";
+import * as yup from 'yup';
 
 export const API_RESPONSE_LOGIN = 'LOGIN';
 export const DEFAULT_NEXT_API_HEADER = { 'Content-Type': 'application/json' };
@@ -59,6 +60,7 @@ export const MODULES = {
     TAB_AGENT_LIST: 'tabAgentList',
     TAB_DOCUMENT_LIST: 'tabDocumentList',
     CONFIGURATION_ENV: 'configurationEnv',
+    IMPORT_CHAT: 'import-chat'
 } as const;
 
 export const MODULE_ACTIONS = {
@@ -99,6 +101,7 @@ export const MODULE_ACTIONS = {
     DELETE_S3_MEDIA : 'deleteS3Media',
     FORK_CHAT: 'forkChat',
     INVITE_LOGIN: 'inviteLogin',
+    IMPORT_UPLOAD: 'upload',
     SHARE: 'share',
     SHARE_LIST: 'shareList',
     UNSHARE: 'unshare',
@@ -133,6 +136,10 @@ export const MODULE_ACTIONS = {
     HUGGING_FACE_HEALTH: 'huggingFaceKeyCheck',
     ANTHROPIC_HEALTH: 'anthropicKeyCheck',
     CHECK_GEMINI_API_KEY: 'geminiKeyCheck',
+    OLLAMA_HEALTH: 'ollamaKeyCheck',
+    SAVE_OLLAMA_SETTINGS: 'saveOllamaSettings',
+    OLLAMA_PULL_MODEL: 'ollamaPullModel',
+    OLLAMA_LIST_TAGS: 'ollamaListTags',
     BRAIN_LIST_ALL: 'brainListAll',
     GET_MESSAGE_CREDITS: 'getMessageCredits',
     FAVORITE_LIST: 'userFavoriteList',
@@ -164,7 +171,8 @@ export const MODULE_ACTIONS = {
     GET_ALL_PAGES: 'getAllPages',
     SOLUTION_INSTALL: 'solutionInstall',
     ENHANCE_PROMPT_BY_LLM: 'enhancePromptByLLM',
-
+    GET_IMAGES: 'getImages',
+    CONVERT_TO_SHARED: 'convertToShared',
 } as const;
 
 export const DATE_TIME_FORMAT = 'DD/MM/YYYY hh:mm A';
@@ -247,7 +255,8 @@ export const AI_MODEL_CODE = {
     ANTHROPIC: 'ANTHROPIC',
     AZURE_OPENAI_SERVICE: 'AZURE_OPENAI_SERVICE',
     // default modal selection
-    DEFAULT_OPENAI_SELECTED: 'gpt-4.1',
+    // DEFAULT_OPENAI_SELECTED: 'gpt-4.1',
+    DEFAULT_OPENAI_SELECTED: 'gpt-5-chat-latest',
     OPEN_AI_DALL_E_2: 'dall-e-2',
     OPEN_AI_DALL_E_3: 'dall-e-3',
     PERPLEXITY: 'PERPLEXITY',
@@ -255,6 +264,7 @@ export const AI_MODEL_CODE = {
     LLAMA4: 'LLAMA4',
     GROK: 'GROK',
     QWEN: 'QWEN',
+    OLLAMA: 'OLLAMA',
     OPEN_ROUTER: 'OPEN_ROUTER',
     // error conversation response
     CONVERSATION_ERROR: `We encountered an issue and were unable to receive a response. This could be due to a variety of reasons including network issues, server problems, or unexpected errors.Please try your request again later. If the problem persists, check your network connection or [contact support](mailto:hello@weam.ai) for further assistance.`,
@@ -335,7 +345,9 @@ export const SOCKET_EVENTS = {
     PRIVATE_BRAIN_OFF: 'privatebrainoff',
     FETCH_SUBSCRIPTION: 'fetchsubscription',
     LLM_RESPONSE_SEND: 'llmresponsesend',
+    LLM_RESPONSE_DONE: 'llmresponsedone',
     GENERATE_TITLE_BY_LLM: 'generatetitlebyllm',
+    FORCE_STOP: 'forcestop',
 }
 
 export const THREAD_MESSAGE_TYPE = {
@@ -372,7 +384,8 @@ export const MODEL_IMAGE_BY_CODE={
     PERPLEXITY: '/perplexity.png',
     DEEPSEEK: '/Deepseek.png',
     GROK: '/grok.png',
-    QWEN: '/qwen.png'
+    QWEN: '/qwen.png',
+    OLLAMA: '/ollama-model.svg'
 }
 
 export const ALLOWED_TYPES = [
@@ -437,30 +450,36 @@ export const GPT_MODELS = [
 export const AI_MODAL_NAME = {
     // GPT-5 models (moved to first for priority in chat dropdown)
     GPT_5: 'gpt-5',
-    GPT_5_MINI: 'gpt-5-mini',
-    GPT_5_NANO: 'gpt-5-nano',
+    // GPT_5_MINI: 'gpt-5-mini',
+    // GPT_5_NANO: 'gpt-5-nano',
     GPT_5_CHAT: 'gpt-5-chat-latest',    
     
     // Open AI models
-    GPT_4_1: 'gpt-4.1',
-    GPT_4_O_LATEST: 'chatgpt-4o-latest',
-    GPT_4_1_MINI: 'gpt-4.1-mini',
-    GPT_4_1_NANO: 'gpt-4.1-nano',
-    O4_MINI: 'o4-mini',
-    GPT_O3: 'o3',
-    GPT_4_1_SEARCH_MEDIUM: 'gpt-4.1-search-medium',
+    // GPT_4_1: 'gpt-4.1',
+    // GPT_4_O_LATEST: 'chatgpt-4o-latest',
+    // GPT_4_1_MINI: 'gpt-4.1-mini',
+    // GPT_4_1_NANO: 'gpt-4.1-nano',
+    // O4_MINI: 'o4-mini',
+    // GPT_O3: 'o3',
+    // GPT_4_1_SEARCH_MEDIUM: 'gpt-4.1-search-medium',
 
     // Gemini models
-    GEMINI_2_5_PRO_PREVIEW_05_06: 'gemini-2.5-pro-preview-05-06',
+    // GEMINI_2_5_PRO_PREVIEW_05_06: 'gemini-2.5-pro-preview-05-06',
+    GEMINI_2_5_PRO: 'gemini-2.5-pro',
     GEMINI_2_0_FLASH: 'gemini-2.0-flash',
-    GEMINI_2_5_FLASH_PREVIEW_05_20: 'gemini-2.5-flash-preview-05-20',
+    // GEMINI_2_5_FLASH_PREVIEW_05_20: 'gemini-2.5-flash-preview-05-20',
+    GEMINI_2_5_FLASH: 'gemini-2.5-flash',
 
     // Anthropic models
     //CLAUDE_3_7_SONNET_LATEST: 'claude-3-7-sonnet-latest',
-    CLAUDE_3_5_HAIKU_LATEST: 'claude-3-5-haiku-latest',
+    // CLAUDE_3_5_HAIKU_LATEST: 'claude-3-5-haiku-latest',
     //CLAUDE_3_OPUS_LATEST: 'claude-3-opus-latest',
-    CLAUDE_SONNET_4_20250514: 'claude-sonnet-4-20250514',
-    CLAUDE_OPUS_4_20250514: 'claude-opus-4-20250514',
+    // CLAUDE_SONNET_4_20250514: 'claude-sonnet-4-20250514',
+    // CLAUDE_OPUS_4_20250514: 'claude-opus-4-20250514',
+    CLAUDE_3_5_HAIKU_LATEST: 'claude-3-5-haiku-latest',
+    CLAUDE_OPUS_4_1_20250805: 'claude-opus-4-1-20250805',
+    CLAUDE_SONNET_4_5_20250929: 'claude-sonnet-4-5-20250929',
+    // CLAUDE_SONNET_4_20250514: 'claude-sonnet-4-20250514',
 
     // Perplexity models
     SONAR: 'sonar',
@@ -475,6 +494,11 @@ export const AI_MODAL_NAME = {
     
     // Grok models
     GROK_3_MINI_BETA: 'x-ai/grok-3-mini-beta',
+
+    // Ollama (local) models
+    OLLAMA_LLAMA_3_1_8B: 'llama3.1:8b',
+    OLLAMA_MISTRAL_7B: 'mistral:7b',
+    OLLAMA_LLAMA_3_2_1B: 'llama3.2:1b',
 
     // Qwen models
     QWEN_3_30B_A3B: 'qwen/qwen3-30b-a3b:free',    
@@ -559,8 +583,15 @@ export const MODAL_NAME_CONVERSION = {
     LLAMA4: 'Llama4',
     GROK: 'Grok',
     QWEN: 'Qwen',
-    OPEN_ROUTER: 'Open Router'
+    OPEN_ROUTER: 'Open Router',
+    OLLAMA: 'Ollama'
 }
+
+// Ollama schema moved from schema/usermodal.ts
+export const ollamaKeys = yup.object({
+    baseUrl: yup.string().url('Please enter a valid URL').required('Base URL is required'),
+    key: yup.string().optional()
+});
 
 export const MODEL_CREDIT_INFO = [
     // GPT-5 models (moved to first for priority in chat dropdown)
@@ -571,7 +602,7 @@ export const MODEL_CREDIT_INFO = [
         displayName: 'GPT-5',
         snippet: 'Complex coding and analysis with advanced reasoning capabilities.',
         doc: true,
-        websearch: false,
+        websearch: true,
         vision: true,
         image: true,
         reasoning: true,
@@ -583,7 +614,7 @@ export const MODEL_CREDIT_INFO = [
         displayName: 'GPT-5 Mini',
         snippet: 'Fast responses, summaries, and general tasks with good reasoning.',
         doc: true,
-        websearch: false,
+        websearch: true,
         vision: true,
         image: true,
         reasoning: true,
@@ -595,7 +626,7 @@ export const MODEL_CREDIT_INFO = [
         displayName: 'GPT-5 Nano',
         snippet: 'Instant Q&A and classification tasks.',
         doc: true,
-        websearch: false,
+        websearch: true,
         vision: true,
         image: true,
         reasoning: true,
@@ -609,7 +640,7 @@ export const MODEL_CREDIT_INFO = [
         doc: true,
         websearch: false,
         vision: true,
-        image: true,
+        image: false,
         reasoning: false,
     },
     {
@@ -651,7 +682,7 @@ export const MODEL_CREDIT_INFO = [
         displayName: 'o3',
         snippet: 'Good for content generation tasks and coding tasks.',
         doc: true,
-        websearch: false,
+        websearch: true,
         vision: true, // chat with images
         image: true, // image generation
         reasoning: true,
@@ -665,7 +696,7 @@ export const MODEL_CREDIT_INFO = [
         doc: true,
         websearch: false,
         vision: true, // chat with images
-        image: true, // image generation
+        image: false, // image generation
         reasoning: false,
     },
     {
@@ -680,7 +711,7 @@ export const MODEL_CREDIT_INFO = [
         displayName: 'GPT 4.1',
         snippet: 'Best for complex problems and advanced coding.',
         doc: true,
-        websearch: false,
+        websearch: true,
         vision: true,
         image: true,
         reasoning: false,
@@ -704,7 +735,7 @@ export const MODEL_CREDIT_INFO = [
         displayName: 'GPT 4.1 Nano',
         snippet: 'Optimized for simple tasks and basic coding.',
         doc: true,
-        websearch: false,
+        websearch: true,
         vision: true,
         image: true,
         reasoning: false,
@@ -728,7 +759,7 @@ export const MODEL_CREDIT_INFO = [
         displayName: 'o4 Mini',
         snippet: 'Powerful for deep understanding and complex problem-solving.',
         doc: true,
-        websearch: false,
+        websearch: true,
         vision: true,
         image: true,
         reasoning: true,
@@ -755,33 +786,57 @@ export const MODEL_CREDIT_INFO = [
         displayName: 'Gemini 2.0 Flash',
         snippet: 'Fast, multimodal, ideal for content generation.',
         doc: true,
-        websearch: false,
+        websearch: true,
         vision: true,
-        image: false,
+        image: true,
         reasoning: false,
     },
+    // {
+    //     code: 'GEMINI',
+    //     model: 'gemini-2.5-flash-preview-05-20',
+    //     credit: 5,
+    //     displayName: 'Gemini 2.5 Flash Preview',
+    //     snippet: 'Fast with enhanced reasoning, great for content and mid-level coding.',
+    //     doc: true,
+    //     websearch: true,
+    //     vision: true,
+    //     image: true,
+    //     reasoning: true,
+    // },
     {
         code: 'GEMINI',
-        model: 'gemini-2.5-flash-preview-05-20',
-        credit: 5,
-        displayName: 'Gemini 2.5 Flash Preview',
-        snippet: 'Fast with enhanced reasoning, great for content and mid-level coding.',
+        model: 'gemini-2.5-flash',
+        credit: 10,
+        displayName: 'Gemini 2.5 Flash',
+        snippet: 'Fast for content and mid-level coding. Reasoning is good.',
         doc: true,
-        websearch: false,
+        websearch: true,
         vision: true,
-        image: false,
+        image: true,
         reasoning: true,
     },
+    // {
+    //     code: 'GEMINI',
+    //     model: 'gemini-2.5-pro-preview-05-06',
+    //     credit: 10,
+    //     displayName: 'Gemini 2.5 Pro Preview',
+    //     snippet: 'Powerful for complex reasoning and advanced coding.',
+    //     doc: true,
+    //     websearch: true,
+    //     vision: true,
+    //     image: true,
+    //     reasoning: true,
+    // },
     {
         code: 'GEMINI',
-        model: 'gemini-2.5-pro-preview-05-06',
+        model: 'gemini-2.5-pro',
         credit: 10,
-        displayName: 'Gemini 2.5 Pro Preview',
+        displayName: 'Gemini 2.5 Pro',
         snippet: 'Powerful for complex reasoning and advanced coding.',
         doc: true,
-        websearch: false,
+        websearch: true,
         vision: true,
-        image: false,
+        image: true,
         reasoning: true,
     },
     {
@@ -803,6 +858,7 @@ export const MODEL_CREDIT_INFO = [
         displayName: 'Claude 3.5 Sonnet Latest',
         snippet: 'Ideal for complex coding and long-form content.',
         doc: true,
+        websearch: true,
         vision: true,
         image: false,
         reasoning: true,
@@ -814,7 +870,7 @@ export const MODEL_CREDIT_INFO = [
         displayName: 'Claude 3.5 Haiku Latest',
         snippet: 'Great for real-time tasks like chatbots.',
         doc: true,
-        websearch: false,
+        websearch: true,
         vision: true,
         image: false,
         reasoning: false,
@@ -826,7 +882,7 @@ export const MODEL_CREDIT_INFO = [
         displayName: 'Claude 3.7 Sonnet Latest',
         snippet: 'Ideal for complex coding and long-form content.',
         doc: true,
-        websearch: false,
+        websearch: true,
         vision: true,
         image: false,
         reasoning: true,
@@ -930,29 +986,72 @@ export const MODEL_CREDIT_INFO = [
         image: false, // image generation
         reasoning: false,
     },
+    // {
+    //     code: 'ANTHROPIC',
+    //     model: 'claude-sonnet-4-20250514',
+    //     credit: 10,
+    //     displayName: 'Claude Sonnet 4',
+    //     snippet: 'Lightweight for quick, creative content and short-form text.',
+    //     doc: true,
+    //     websearch: false,
+    //     vision: true,
+    //     image: false,
+    //     reasoning: true,
+    // },
     {
         code: 'ANTHROPIC',
-        model: 'claude-sonnet-4-20250514',
+        model: 'claude-sonnet-4-5-20250929',
         credit: 10,
-        displayName: 'Claude Sonnet 4',
-        snippet: 'Lightweight for quick, creative content and short-form text.',
+        displayName: 'Claude Sonnet 4.5',
+        snippet: 'Better for complex reasoning and advanced coding.',
         doc: true,
         websearch: false,
         vision: true,
         image: false,
         reasoning: true,
     },
+    // {
+    //     code: 'ANTHROPIC',
+    //     model: 'claude-opus-4-20250514',
+    //     credit: 50,
+    //     displayName: 'Claude Opus 4',
+    //     snippet: 'High-capacity for deep reasoning and large-scale code or logic tasks',
+    //     doc: true,
+    //     websearch: false,
+    //     vision: true,
+    //     image: false,
+    //     reasoning: true,
+    // },
     {
         code: 'ANTHROPIC',
-        model: 'claude-opus-4-20250514',
+        model: 'claude-opus-4-1-20250805',
         credit: 50,
-        displayName: 'Claude Opus 4',
-        snippet: 'High-capacity for deep reasoning and large-scale code or logic tasks',
+        displayName: 'Claude Opus 4.1',
+        snippet: 'High-capacity for deep reasoning and large-scale code or logic tasks.',
         doc: true,
         websearch: false,
         vision: true,
         image: false,
         reasoning: true,
+    },
+    // Ollama (local) models
+    {
+        code: 'OLLAMA',
+        model: 'llama3.2:1b',
+        credit: 0,
+        displayName: 'Llama 3.2 1B (Local)'
+    },
+    {
+        code: 'OLLAMA',
+        model: 'llama3.1:8b',
+        credit: 0,
+        displayName: 'Llama 3.1 8B (Local)'
+    },
+    {
+        code: 'OLLAMA',
+        model: 'mistral:7b',
+        credit: 0,
+        displayName: 'Mistral 7B (Local)'
     },
     {
         code: 'PRO_AGENT',
@@ -1022,6 +1121,7 @@ export const SUB_MODEL_TYPE = [
     'GEMINI',
     'PERPLEXITY',
     'DEEPSEEK',
+    'OLLAMA',
     'LLAMA4'
 ] as const;
 
@@ -1434,6 +1534,8 @@ export const MODEL_NAME_BY_CODE = {
     'gemini-1.5-flash': 'GEMINI',
     'gemini-2.5-pro-preview-03-25': 'GEMINI',
     'gemini-2.5-flash-preview-05-20': 'GEMINI',
+    'gemini-2.5-pro': 'GEMINI',
+    'gemini-2.5-flash': 'GEMINI',
     
     // Anthropic models
     'claude-3-opus-latest': 'ANTHROPIC',
@@ -1444,6 +1546,8 @@ export const MODEL_NAME_BY_CODE = {
     'claude-3-haiku-20240307': 'ANTHROPIC',
     'claude-sonnet-4-20250514': 'ANTHROPIC',
     'claude-opus-4-20250514': 'ANTHROPIC',
+    'claude-sonnet-4-5-20250929': 'ANTHROPIC',
+    'claude-opus-4-1-20250805': 'ANTHROPIC',
     
     // Perplexity models
     'llama-3.1-sonar-large-128k-online': 'PERPLEXITY',
@@ -1474,14 +1578,30 @@ export const MODEL_NAME_BY_CODE = {
     
     // Stability AI models
     'sdxl-flash-lgh': 'HUGGING_FACE',
+
+    // Ollama (local) models
+    'llama3.1:8b': 'OLLAMA',
+    'mistral:7b': 'OLLAMA',
 }
 
 export const getModelImageByName = (name: string) => {
+    // Check if it's an Ollama model (local model)
+    if (name) {
+        // For models that are run locally through Ollama
+        if (name.includes('(Local)') || 
+            (name.toLowerCase().includes('llama') && !name.toLowerCase().includes('meta')) ||
+            name.toLowerCase().includes('mistral') ||
+            name.toLowerCase().includes('phi') ||
+            name.toLowerCase().includes('gemma')) {
+            return MODEL_IMAGE_BY_CODE['OLLAMA'];
+        }
+    }
+    
     const code = MODEL_NAME_BY_CODE[name];
     if (code) {
         return MODEL_IMAGE_BY_CODE[code];
     }
-    return null;
+    return MODEL_IMAGE_BY_CODE['OPEN_AI']; // Default fallback
 }
 
 export const SUBSCRIPTION_PLAN_CREDITS = {
@@ -1490,7 +1610,7 @@ export const SUBSCRIPTION_PLAN_CREDITS = {
 }
 
 
-export const SEQUENCE_MODEL_LIST = [AI_MODEL_CODE.OPEN_AI, AI_MODEL_CODE.GEMINI, AI_MODEL_CODE.ANTHROPIC, AI_MODEL_CODE.PERPLEXITY, AI_MODEL_CODE.DEEPSEEK, AI_MODEL_CODE.LLAMA4, AI_MODEL_CODE.QWEN, AI_MODEL_CODE.GROK] as const;
+export const SEQUENCE_MODEL_LIST = [AI_MODEL_CODE.OPEN_AI, AI_MODEL_CODE.GEMINI, AI_MODEL_CODE.ANTHROPIC, AI_MODEL_CODE.PERPLEXITY, AI_MODEL_CODE.DEEPSEEK, AI_MODEL_CODE.OLLAMA, AI_MODEL_CODE.LLAMA4, AI_MODEL_CODE.QWEN, AI_MODEL_CODE.GROK, AI_MODEL_CODE.OLLAMA] as const;
 
 export const FILE_UPLOAD_FOLDER = {
     SALES_CALL_AGENT: 'sales-call',
@@ -1511,4 +1631,5 @@ export const STREAMING_RESPONSE_STATUS = {
     CITATION: '[CITATION]',
     WEB_SEARCH: '[WEB_SEARCH]',
     IMAGE_GENERATION_START: '[IMAGE_GENERATION_TOOL]',
+    CONVERSATION_ERROR: '[CONVERSATION_ERROR]'
 }

@@ -21,6 +21,7 @@ import OpenAiAPIKeysModelProvider from '@/components/AiModel/OpenAiAPIKeysModelP
 import AnyscaleModelProvider from '@/components/AiModel/AnyscaleModelProvider';
 import HuggingFaceModelProvider from '@/components/AiModel/HuggingFaceModelProvider';
 import GooglePalmAPIkeyModelProvider from '@/components/AiModel/GooglePalmAPIkeyModelProvider';
+import OllamaModelProvider from '@/components/AiModel/OllamaModelProvider';
 import SearchIcon from '@/icons/Search';
 import useAiModal from '@/hooks/aiModal/useAiModal';
 import { useSelector } from 'react-redux';
@@ -159,7 +160,7 @@ export const AddNewModel = ({ isAddAiModel }) => {
                         <>
                         <div style={{display:"flex", justifyContent:"space-between"}}>
                             <span>{m.title}</span>
-                            <span className="text-blue">
+                            <span className="text-b2">
                                 {' '}
                                 Coming soon
                             </span>
@@ -277,6 +278,9 @@ export const AddNewModel = ({ isAddAiModel }) => {
                             {selected.code === AI_MODEL_CODE.GEMINI && (
                                 <GooglePalmAPIkeyModelProvider configs={configs} />
                             )}
+                            {selected.code === AI_MODEL_CODE.OLLAMA && (
+                                <OllamaModelProvider configs={configs} />
+                            )}
                             {selected && (
                                 <GetApiKey
                                     name={`${selected.value} dashboard`}
@@ -296,7 +300,7 @@ export const AddNewModel = ({ isAddAiModel }) => {
                         </button>
                     )}
                     {keystatus && showCancelAPI && (
-                        <button className="btn btn-blue" onClick={handleClear}>
+                        <button className="btn btn-black" onClick={handleClear}>
                             {cleartitle ? 'Cancel' : 'Clear API key'}
                         </button>
                     )}

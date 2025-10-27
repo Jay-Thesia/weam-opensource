@@ -27,6 +27,7 @@ const createBrainKeys = joi.object({
     )
     .optional(),
     customInstruction: joi.string().optional().allow(''),
+    charimg: joi.string().optional().allow(''),
 });
 
 const updateBrainKeys = joi.object({
@@ -50,6 +51,18 @@ const updateBrainKeys = joi.object({
 
 const deleteBrainKeys = joi.object({
     isShare: joi.boolean().required(),
+});
+
+const convertToSharedKeys = joi.object({
+    shareWith: joi
+        .array()
+        .items(joi.object(userSchemaKeys).unknown(true))
+        .optional(),
+    teams: joi
+        .array()
+        .items(joi.object(teamSchemaKeys).optional())
+        .optional(),
+    customInstruction: joi.string().optional().allow(''),
 });
 
 const shareBrainKeys = joi.object({
@@ -84,5 +97,6 @@ module.exports = {
     shareBrainKeys,
     unshareBrainKeys,
     shareDocKeys,
-    deleteBrainKeys
+    deleteBrainKeys,
+    convertToSharedKeys
 };

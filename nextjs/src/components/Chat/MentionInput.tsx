@@ -103,7 +103,7 @@ const MentionInput = ({ users, setContent, content, onTyping, handleSubmit }) =>
                 placeholder={"Reply and Mention people using '@'"}
                 allowSuggestionsAboveCursor={true}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.shiftKey) {
+                  if (e.key === "Enter" && !e.shiftKey && content.trim() !== '') {
                       handleSubmit(e);
                       e.preventDefault();
                   }
@@ -116,7 +116,7 @@ const MentionInput = ({ users, setContent, content, onTyping, handleSubmit }) =>
                     renderSuggestion={renderUserSuggestion}
                     appendSpaceOnAdd={true}
                     
-                    className="text-blue font-bold relative z-[1] rounded-custom"
+                    className="text-b2 font-bold relative z-[1] rounded-custom"
                 />
             </MentionsInput>
 
